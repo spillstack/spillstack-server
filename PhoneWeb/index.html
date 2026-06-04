@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Spillstack</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- JOIN SCREEN -->
+  <div id="joinScreen" class="screen">
+    <h1>Spillstack</h1>
+    <p>Join the room on your phone.</p>
+
+    <input id="nameInput" placeholder="Your name" maxlength="15">
+    <input id="roomInput" placeholder="Room code">
+
+    <button onclick="joinRoom()">Join Game</button>
+
+    <p id="joinMessage"></p>
+  </div>
+
+  <!-- WAITING SCREEN -->
+  <div id="waitingScreen" class="screen hidden">
+    <h1>You’re in!</h1>
+    <p>Waiting for the host to start the round...</p>
+  </div>
+
+  <!-- OLD VOTE SCREEN -->
+  <div id="voteScreen" class="screen hidden">
+    <h2 id="questionText">Question goes here</h2>
+    <div id="playersList"></div>
+  </div>
+
+  <!-- COPYCAT SCREEN -->
+  <div id="copycatScreen" class="screen hidden">
+    <h2 id="copycatPromptText">Copycat prompt goes here</h2>
+
+    <input id="copycatAnswerInput" placeholder="Type your answer">
+
+    <button onclick="submitCopycatAnswer()">Submit Answer</button>
+
+    <p id="copycatMessage"></p>
+  </div>
+
+  <!-- HOT SEAT SCREEN -->
+  <div id="hotSeatScreen" class="screen hidden">
+    <h2 id="hotSeatPromptText">Hot Seat prompt goes here</h2>
+
+    <input id="hotSeatAnswerInput" placeholder="Type your answer">
+
+    <button id="hotSeatSubmitButton" onclick="submitHotSeatAnswer()">Submit Answer</button>
+
+    <div id="hotSeatAnswersList"></div>
+
+    <p id="hotSeatMessage"></p>
+  </div>
+
+  <!-- PASSWORD PANIC SCREEN -->
+  <div id="passwordPanicScreen" class="screen hidden">
+    <h1 id="passwordPanicTitleText">Password Panic</h1>
+
+    <p id="passwordPanicInfoText">Password Panic info goes here</p>
+
+    <input id="passwordPanicInput" placeholder="Type here">
+
+    <button id="passwordPanicSubmitButton" onclick="submitPasswordPanic()">Submit</button>
+
+    <p id="passwordPanicMessage"></p>
+  </div>
+
+  <!-- DONE SCREEN -->
+  <div id="doneScreen" class="screen hidden">
+    <h1 id="doneTitle">Locked in!</h1>
+    <p id="doneMessage">Waiting for everyone else...</p>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
