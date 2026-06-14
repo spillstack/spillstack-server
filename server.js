@@ -25,7 +25,76 @@ const unityHosts = {};
 const MAX_PLAYERS_PER_ROOM = 5;
 
 function makeRoomCode() {
-  return Math.floor(1000 + Math.random() * 9000).toString();
+  let roomCode = Math.floor(1000 + Math.random() * 9000).toString();
+
+  while (rooms[roomCode]) {
+    roomCode = Math.floor(1000 + Math.random() * 9000).toString();
+  }
+
+  return roomCode;
+}
+
+function makeNewRoomObject() {
+  return {
+    players: [],
+    currentQuestion: null,
+    votes: {},
+
+    currentCopycatPrompt: null,
+    copycatAnswers: {},
+    copycatTargetPlayerId: null,
+    copycatTargetIndex: 0,
+    copycatRoundFinished: false,
+
+    currentHotSeatPrompt: null,
+    hotSeatAnswers: {},
+    hotSeatPlayerId: null,
+    hotSeatPlayerIndex: 0,
+    hotSeatRoundFinished: false,
+
+    currentPasswordPanicWord: null,
+    currentPasswordPanicClue: null,
+    passwordPanicGuesses: {},
+    passwordPanicClueGiverId: null,
+    passwordPanicClueGiverIndex: 0,
+    passwordPanicRoundFinished: false,
+  };
+}
+
+function createRoomForUnity(ws) {
+  const roomCode = makeRoomCode();
+
+  rooms[roomCode] = makeNewRoomObject();
+  unityHosts[roomCode] = ws;
+  ws.roomCode = roomCode;
+
+  ws.send(
+    JSON.stringify({
+      type: "roomCreated",
+      roomCode: roomCode,
+    })
+  );
+
+  console.log("Unity room created:", roomCode);
+}
+
+function closeRoomAndCreateNewRoom(ws, oldRoomCode, reasonMessage) {
+  const room = rooms[oldRoomCode];
+
+  if (room) {
+    io.to(oldRoomCode).emit("game:roomClosed", {
+      message: reasonMessage || "The game ended. Please enter the new room code.",
+    });
+
+    io.in(oldRoomCode).socketsLeave(oldRoomCode);
+
+    delete rooms[oldRoomCode];
+    delete unityHosts[oldRoomCode];
+
+    console.log("Closed old room:", oldRoomCode);
+  }
+
+  createRoomForUnity(ws);
 }
 
 function sendToUnity(roomCode, message) {
@@ -89,28 +158,30 @@ function addScores(room) {
 function makeCopycatResultText(room) {
   const targetPlayer = getPlayer(room, room.copycatTargetPlayerId);
   const targetName = targetPlayer ? targetPlayer.name : "Unknown Player";
-  const targetAnswer = room.copycatAnswers[room.copycatTargetPlayerId] || "";
+  const targetAnswer = room.copycatAnswers[room.copycatTargetPlayerId] || "No answer";
   const cleanTargetAnswer = cleanAnswer(targetAnswer);
 
   let correctGuessers = [];
   let allGuessesText = "";
 
-  for (const playerId in room.copycatAnswers) {
-    if (playerId === room.copycatTargetPlayerId) {
-      continue;
+  // This makes the target player's answer show in the Unity answer boxes.
+  allGuessesText += "- " + targetName + ": " + targetAnswer + " TARGET\n";
+
+  room.players.forEach((player) => {
+    if (player.id === room.copycatTargetPlayerId) {
+      return;
     }
 
-    const guess = room.copycatAnswers[playerId];
-    const playerName = getPlayerName(room, playerId);
-    const isCorrect = cleanAnswer(guess) === cleanTargetAnswer;
+    const guess = room.copycatAnswers[player.id] || "No answer";
+    const isCorrect = cleanAnswer(guess) === cleanTargetAnswer && guess !== "No answer";
 
     if (isCorrect) {
-      correctGuessers.push(playerId);
-      allGuessesText += "- " + playerName + ": " + guess + " CORRECT\n";
+      correctGuessers.push(player.id);
+      allGuessesText += "- " + player.name + ": " + guess + " CORRECT\n";
     } else {
-      allGuessesText += "- " + playerName + ": " + guess + "\n";
+      allGuessesText += "- " + player.name + ": " + guess + "\n";
     }
-  }
+  });
 
   correctGuessers.forEach((playerId) => {
     const player = getPlayer(room, playerId);
@@ -160,6 +231,12 @@ function finishCopycatRound(roomCode) {
 
   if (!room) return;
 
+  if (room.copycatRoundFinished === true) {
+    return;
+  }
+
+  room.copycatRoundFinished = true;
+
   const resultData = makeCopycatResultText(room);
 
   sendToUnity(roomCode, {
@@ -170,6 +247,7 @@ function finishCopycatRound(roomCode) {
     targetAnswer: resultData.targetAnswer,
     resultText: resultData.resultText,
     players: room.players,
+    answers: room.copycatAnswers,
   });
 
   io.to(roomCode).emit("game:copycatFinished");
@@ -178,32 +256,76 @@ function finishCopycatRound(roomCode) {
   console.log("Scores:", room.players);
 }
 
+function sendHotSeatChooseWinner(roomCode) {
+  const room = rooms[roomCode];
+
+  if (!room) return;
+
+  const answers = [];
+
+  for (const playerId in room.hotSeatAnswers) {
+    answers.push({
+      playerId,
+      answer: room.hotSeatAnswers[playerId],
+    });
+  }
+
+  if (answers.length === 0) {
+    finishHotSeatRound(roomCode, null);
+    return;
+  }
+
+  io.to(roomCode).emit("game:hotSeatChooseWinner", {
+    prompt: room.currentHotSeatPrompt,
+    hotSeatPlayerId: room.hotSeatPlayerId,
+    hotSeatPlayerName: getPlayerName(room, room.hotSeatPlayerId),
+    answers,
+  });
+
+  sendToUnity(roomCode, {
+    type: "hotSeatChoosingWinner",
+    prompt: room.currentHotSeatPrompt,
+    hotSeatPlayerId: room.hotSeatPlayerId,
+    hotSeatPlayerName: getPlayerName(room, room.hotSeatPlayerId),
+    totalAnswers: answers.length,
+  });
+}
+
 function finishHotSeatRound(roomCode, winnerPlayerId) {
   const room = rooms[roomCode];
 
   if (!room) return;
 
-  const winner = getPlayer(room, winnerPlayerId);
+  if (room.hotSeatRoundFinished === true) {
+    return;
+  }
+
+  room.hotSeatRoundFinished = true;
+
   const hotSeatPlayer = getPlayer(room, room.hotSeatPlayerId);
+  const winner = winnerPlayerId ? getPlayer(room, winnerPlayerId) : null;
 
-  if (!winner) return;
-
-  winner.score += 1000;
-
-  const winningAnswer = room.hotSeatAnswers[winnerPlayerId] || "";
-
+  let winningAnswer = "No winner";
   let answersText = "";
 
-  for (const playerId in room.hotSeatAnswers) {
-    const playerName = getPlayerName(room, playerId);
-    const answer = room.hotSeatAnswers[playerId];
-
-    if (playerId === winnerPlayerId) {
-      answersText += "- " + playerName + ": " + answer + " WINNER\n";
-    } else {
-      answersText += "- " + playerName + ": " + answer + "\n";
-    }
+  if (winner) {
+    winner.score += 1000;
+    winningAnswer = room.hotSeatAnswers[winnerPlayerId] || "No answer";
   }
+
+  room.players.forEach((player) => {
+    if (player.id === room.hotSeatPlayerId) {
+      return;
+    }
+
+    const answer = room.hotSeatAnswers[player.id] || "No answer";
+
+    if (winner && player.id === winnerPlayerId) {
+      answersText += "- " + player.name + ": " + answer + " WINNER\n";
+    } else {
+      answersText += "- " + player.name + ": " + answer + "\n";
+    }
+  });
 
   const resultText =
     "HOT SEAT RESULTS\n\n" +
@@ -214,7 +336,7 @@ function finishHotSeatRound(roomCode, winnerPlayerId) {
     winningAnswer +
     "\n\n" +
     "Winner:\n" +
-    winner.name +
+    (winner ? winner.name : "No winner") +
     "\n\n" +
     "All Answers:\n" +
     answersText;
@@ -224,11 +346,12 @@ function finishHotSeatRound(roomCode, winnerPlayerId) {
     prompt: room.currentHotSeatPrompt,
     hotSeatPlayerId: room.hotSeatPlayerId,
     hotSeatPlayerName: hotSeatPlayer ? hotSeatPlayer.name : "Unknown Player",
-    winnerPlayerId,
-    winnerPlayerName: winner.name,
+    winnerPlayerId: winnerPlayerId || "",
+    winnerPlayerName: winner ? winner.name : "No winner",
     winningAnswer,
     resultText,
     players: room.players,
+    answers: room.hotSeatAnswers,
   });
 
   io.to(roomCode).emit("game:hotSeatFinished");
@@ -242,6 +365,12 @@ function finishPasswordPanicRound(roomCode) {
 
   if (!room) return;
 
+  if (room.passwordPanicRoundFinished === true) {
+    return;
+  }
+
+  room.passwordPanicRoundFinished = true;
+
   const secretWord = room.currentPasswordPanicWord || "";
   const cleanSecret = cleanAnswer(secretWord);
   const clueGiver = getPlayer(room, room.passwordPanicClueGiverId);
@@ -249,18 +378,21 @@ function finishPasswordPanicRound(roomCode) {
   let correctGuessers = [];
   let allGuessesText = "";
 
-  for (const playerId in room.passwordPanicGuesses) {
-    const guess = room.passwordPanicGuesses[playerId];
-    const playerName = getPlayerName(room, playerId);
-    const isCorrect = cleanAnswer(guess) === cleanSecret;
+  room.players.forEach((player) => {
+    if (player.id === room.passwordPanicClueGiverId) {
+      return;
+    }
+
+    const guess = room.passwordPanicGuesses[player.id] || "No answer";
+    const isCorrect = cleanAnswer(guess) === cleanSecret && guess !== "No answer";
 
     if (isCorrect) {
-      correctGuessers.push(playerId);
-      allGuessesText += "- " + playerName + ": " + guess + " CORRECT\n";
+      correctGuessers.push(player.id);
+      allGuessesText += "- " + player.name + ": " + guess + " CORRECT\n";
     } else {
-      allGuessesText += "- " + playerName + ": " + guess + "\n";
+      allGuessesText += "- " + player.name + ": " + guess + "\n";
     }
-  }
+  });
 
   correctGuessers.forEach((playerId) => {
     const player = getPlayer(room, playerId);
@@ -293,7 +425,7 @@ function finishPasswordPanicRound(roomCode) {
     secretWord +
     "\n\n" +
     "Clue:\n" +
-    room.currentPasswordPanicClue +
+    (room.currentPasswordPanicClue || "No clue") +
     "\n\n" +
     "Correct Guessers:\n" +
     correctText +
@@ -305,15 +437,47 @@ function finishPasswordPanicRound(roomCode) {
     clueGiverId: room.passwordPanicClueGiverId,
     clueGiverName: clueGiver ? clueGiver.name : "Unknown Player",
     secretWord,
-    clue: room.currentPasswordPanicClue,
+    clue: room.currentPasswordPanicClue || "No clue",
     resultText,
     players: room.players,
+    guesses: room.passwordPanicGuesses,
   });
 
   io.to(roomCode).emit("game:passwordPanicFinished");
 
   console.log("Password Panic result:", resultText);
   console.log("Scores:", room.players);
+}
+
+function forcePasswordPanicClue(roomCode) {
+  const room = rooms[roomCode];
+
+  if (!room) return;
+
+  if (!room.currentPasswordPanicWord) {
+    return;
+  }
+
+  if (room.currentPasswordPanicClue) {
+    return;
+  }
+
+  room.currentPasswordPanicClue = "No clue";
+
+  io.to(roomCode).emit("game:passwordPanicClueGiven", {
+    clueGiverId: room.passwordPanicClueGiverId,
+    clueGiverName: getPlayerName(room, room.passwordPanicClueGiverId),
+    clue: room.currentPasswordPanicClue,
+  });
+
+  sendToUnity(roomCode, {
+    type: "passwordPanicClueGiven",
+    clueGiverId: room.passwordPanicClueGiverId,
+    clueGiverName: getPlayerName(room, room.passwordPanicClueGiverId),
+    clue: room.currentPasswordPanicClue,
+  });
+
+  console.log("Password Panic clue forced:", room.currentPasswordPanicClue);
 }
 
 wss.on("connection", (ws) => {
@@ -330,41 +494,52 @@ wss.on("connection", (ws) => {
     }
 
     if (message.type === "createRoom") {
-      const roomCode = makeRoomCode();
+      if (ws.roomCode && rooms[ws.roomCode]) {
+        delete rooms[ws.roomCode];
+        delete unityHosts[ws.roomCode];
+      }
 
-      rooms[roomCode] = {
-        players: [],
-        currentQuestion: null,
-        votes: {},
+      createRoomForUnity(ws);
+    }
 
-        currentCopycatPrompt: null,
-        copycatAnswers: {},
-        copycatTargetPlayerId: null,
-        copycatTargetIndex: 0,
-
-        currentHotSeatPrompt: null,
-        hotSeatAnswers: {},
-        hotSeatPlayerId: null,
-        hotSeatPlayerIndex: 0,
-
-        currentPasswordPanicWord: null,
-        currentPasswordPanicClue: null,
-        passwordPanicGuesses: {},
-        passwordPanicClueGiverId: null,
-        passwordPanicClueGiverIndex: 0,
-      };
-
-      unityHosts[roomCode] = ws;
-      ws.roomCode = roomCode;
-
-      ws.send(
-        JSON.stringify({
-          type: "roomCreated",
-          roomCode: roomCode,
-        })
+    if (message.type === "endGameCreateNewRoom") {
+      closeRoomAndCreateNewRoom(
+        ws,
+        message.roomCode,
+        message.message || "The game ended. Please enter the new room code."
       );
+    }
 
-      console.log("Unity room created:", roomCode);
+    if (message.type === "forceFinishCopycat") {
+      const room = rooms[message.roomCode];
+
+      if (!room) return;
+      if (!room.currentCopycatPrompt) return;
+
+      finishCopycatRound(message.roomCode);
+    }
+
+    if (message.type === "forceFinishHotSeat") {
+      const room = rooms[message.roomCode];
+
+      if (!room) return;
+      if (!room.currentHotSeatPrompt) return;
+      if (room.hotSeatRoundFinished === true) return;
+
+      sendHotSeatChooseWinner(message.roomCode);
+    }
+
+    if (message.type === "forceFinishPasswordPanicClue") {
+      forcePasswordPanicClue(message.roomCode);
+    }
+
+    if (message.type === "forceFinishPasswordPanicGuesses") {
+      const room = rooms[message.roomCode];
+
+      if (!room) return;
+      if (!room.currentPasswordPanicWord) return;
+
+      finishPasswordPanicRound(message.roomCode);
     }
 
     if (message.type === "startQuestion") {
@@ -415,6 +590,7 @@ wss.on("connection", (ws) => {
       room.copycatTargetPlayerId = targetPlayer.id;
       room.currentCopycatPrompt = message.prompt;
       room.copycatAnswers = {};
+      room.copycatRoundFinished = false;
 
       io.to(message.roomCode).emit("game:copycatStarted", {
         prompt: message.prompt,
@@ -458,6 +634,7 @@ wss.on("connection", (ws) => {
       room.hotSeatPlayerId = hotSeatPlayer.id;
       room.currentHotSeatPrompt = message.prompt;
       room.hotSeatAnswers = {};
+      room.hotSeatRoundFinished = false;
 
       io.to(message.roomCode).emit("game:hotSeatStarted", {
         prompt: message.prompt,
@@ -502,6 +679,7 @@ wss.on("connection", (ws) => {
       room.currentPasswordPanicWord = message.secretWord;
       room.currentPasswordPanicClue = null;
       room.passwordPanicGuesses = {};
+      room.passwordPanicRoundFinished = false;
 
       room.players.forEach((player) => {
         if (player.id === clueGiver.id) {
@@ -531,34 +709,11 @@ wss.on("connection", (ws) => {
     }
 
     if (message.type === "returnToLobby") {
-      const room = rooms[message.roomCode];
-
-      if (!room) return;
-
-      room.currentQuestion = null;
-      room.votes = {};
-
-      room.currentCopycatPrompt = null;
-      room.copycatAnswers = {};
-      room.copycatTargetPlayerId = null;
-
-      room.currentHotSeatPrompt = null;
-      room.hotSeatAnswers = {};
-      room.hotSeatPlayerId = null;
-
-      room.currentPasswordPanicWord = null;
-      room.currentPasswordPanicClue = null;
-      room.passwordPanicGuesses = {};
-      room.passwordPanicClueGiverId = null;
-
-      io.to(message.roomCode).emit("game:returnToLobby");
-
-      sendToUnity(message.roomCode, {
-        type: "returnedToLobby",
-        players: room.players,
-      });
-
-      console.log("Returned phones to lobby for room:", message.roomCode);
+      closeRoomAndCreateNewRoom(
+        ws,
+        message.roomCode,
+        "The host returned to the lobby. Please enter the new room code."
+      );
     }
 
     if (message.type === "restartGame") {
@@ -573,17 +728,20 @@ wss.on("connection", (ws) => {
       room.copycatAnswers = {};
       room.copycatTargetPlayerId = null;
       room.copycatTargetIndex = 0;
+      room.copycatRoundFinished = false;
 
       room.currentHotSeatPrompt = null;
       room.hotSeatAnswers = {};
       room.hotSeatPlayerId = null;
       room.hotSeatPlayerIndex = 0;
+      room.hotSeatRoundFinished = false;
 
       room.currentPasswordPanicWord = null;
       room.currentPasswordPanicClue = null;
       room.passwordPanicGuesses = {};
       room.passwordPanicClueGiverId = null;
       room.passwordPanicClueGiverIndex = 0;
+      room.passwordPanicRoundFinished = false;
 
       resetScores(room);
 
@@ -722,6 +880,11 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (room.copycatRoundFinished === true) {
+      socket.emit("player:copycatAnswerRejected", "This round is already finished.");
+      return;
+    }
+
     if (!answer || answer.trim() === "") {
       socket.emit("player:copycatAnswerRejected", "Type an answer first.");
       return;
@@ -741,6 +904,8 @@ io.on("connection", (socket) => {
       type: "copycatAnswersUpdated",
       totalAnswers,
       totalPlayers,
+      playerId: socket.id,
+      playerName: getPlayerName(room, socket.id),
     });
 
     if (totalAnswers >= totalPlayers) {
@@ -755,6 +920,11 @@ io.on("connection", (socket) => {
 
     if (!room.currentHotSeatPrompt) {
       socket.emit("player:hotSeatAnswerRejected", "No Hot Seat round is active.");
+      return;
+    }
+
+    if (room.hotSeatRoundFinished === true) {
+      socket.emit("player:hotSeatAnswerRejected", "This round is already finished.");
       return;
     }
 
@@ -782,32 +952,12 @@ io.on("connection", (socket) => {
       type: "hotSeatAnswersUpdated",
       totalAnswers,
       totalPlayersNeeded,
+      playerId: socket.id,
+      playerName: getPlayerName(room, socket.id),
     });
 
     if (totalAnswers >= totalPlayersNeeded) {
-      const answers = [];
-
-      for (const playerId in room.hotSeatAnswers) {
-        answers.push({
-          playerId,
-          answer: room.hotSeatAnswers[playerId],
-        });
-      }
-
-      io.to(roomCode).emit("game:hotSeatChooseWinner", {
-        prompt: room.currentHotSeatPrompt,
-        hotSeatPlayerId: room.hotSeatPlayerId,
-        hotSeatPlayerName: getPlayerName(room, room.hotSeatPlayerId),
-        answers,
-      });
-
-      sendToUnity(roomCode, {
-        type: "hotSeatChoosingWinner",
-        prompt: room.currentHotSeatPrompt,
-        hotSeatPlayerId: room.hotSeatPlayerId,
-        hotSeatPlayerName: getPlayerName(room, room.hotSeatPlayerId),
-        totalAnswers,
-      });
+      sendHotSeatChooseWinner(roomCode);
     }
   });
 
@@ -815,6 +965,11 @@ io.on("connection", (socket) => {
     const room = rooms[roomCode];
 
     if (!room) return;
+
+    if (room.hotSeatRoundFinished === true) {
+      socket.emit("player:hotSeatAnswerRejected", "This round is already finished.");
+      return;
+    }
 
     if (socket.id !== room.hotSeatPlayerId) {
       socket.emit("player:hotSeatAnswerRejected", "Only the Hot Seat player can pick the winner.");
@@ -839,6 +994,11 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (room.passwordPanicRoundFinished === true) {
+      socket.emit("player:passwordPanicRejected", "This round is already finished.");
+      return;
+    }
+
     if (socket.id !== room.passwordPanicClueGiverId) {
       socket.emit("player:passwordPanicRejected", "Only the clue giver can submit the clue.");
       return;
@@ -846,6 +1006,11 @@ io.on("connection", (socket) => {
 
     if (!clue || clue.trim() === "") {
       socket.emit("player:passwordPanicRejected", "Type a clue first.");
+      return;
+    }
+
+    if (room.currentPasswordPanicClue) {
+      socket.emit("player:passwordPanicRejected", "You already submitted a clue.");
       return;
     }
 
@@ -862,6 +1027,8 @@ io.on("connection", (socket) => {
       clueGiverId: room.passwordPanicClueGiverId,
       clueGiverName: getPlayerName(room, room.passwordPanicClueGiverId),
       clue: room.currentPasswordPanicClue,
+      playerId: socket.id,
+      playerName: getPlayerName(room, socket.id),
     });
 
     console.log("Password Panic clue:", room.currentPasswordPanicClue);
@@ -874,6 +1041,11 @@ io.on("connection", (socket) => {
 
     if (!room.currentPasswordPanicWord || !room.currentPasswordPanicClue) {
       socket.emit("player:passwordPanicRejected", "No Password Panic guess phase is active.");
+      return;
+    }
+
+    if (room.passwordPanicRoundFinished === true) {
+      socket.emit("player:passwordPanicRejected", "This round is already finished.");
       return;
     }
 
@@ -901,6 +1073,8 @@ io.on("connection", (socket) => {
       type: "passwordPanicGuessesUpdated",
       totalGuesses,
       totalPlayersNeeded,
+      playerId: socket.id,
+      playerName: getPlayerName(room, socket.id),
     });
 
     if (totalGuesses >= totalPlayersNeeded) {
