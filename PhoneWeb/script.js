@@ -31,6 +31,28 @@ function setJoinButtonState(canClick) {
   }
 }
 
+function resetPhoneToJoinScreen(message) {
+  currentRoomCode = "";
+  myPlayerId = "";
+  passwordPanicMode = "";
+  isJoining = false;
+
+  setJoinButtonState(true);
+
+  const roomInput = document.getElementById("roomInput");
+  const joinMessage = document.getElementById("joinMessage");
+
+  if (roomInput != null) {
+    roomInput.value = "";
+  }
+
+  if (joinMessage != null) {
+    joinMessage.innerText = message;
+  }
+
+  showScreen("joinScreen");
+}
+
 function joinRoom() {
   if (isJoining) {
     return;
@@ -144,6 +166,7 @@ function submitPasswordPanic() {
 
 socket.on("player:joinSuccess", (data) => {
   myPlayerId = data.player.id;
+  currentRoomCode = data.roomCode;
   isJoining = false;
   setJoinButtonState(true);
   document.getElementById("joinMessage").innerText = "";
@@ -163,6 +186,15 @@ socket.on("player:joinFailed", (message) => {
   }
 
   showScreen("joinScreen");
+});
+
+socket.on("game:roomClosed", (data) => {
+  const message =
+    data && data.message
+      ? data.message
+      : "The game ended. Please enter the new room code.";
+
+  resetPhoneToJoinScreen(message);
 });
 
 socket.on("game:questionStarted", (data) => {
@@ -419,20 +451,11 @@ socket.on("game:passwordPanicFinished", () => {
 });
 
 socket.on("game:returnToLobby", () => {
-  passwordPanicMode = "";
-  setDoneScreen("Back to lobby", "Waiting for the host to start another game...");
-  showScreen("waitingScreen");
+  resetPhoneToJoinScreen("The host returned to the lobby. Please enter the new room code.");
 });
 
 socket.on("game:hostDisconnected", () => {
-  passwordPanicMode = "";
-  currentRoomCode = "";
-  myPlayerId = "";
-  isJoining = false;
-  setJoinButtonState(true);
-
-  document.getElementById("joinMessage").innerText = "Host left. Join a new room.";
-  showScreen("joinScreen");
+  resetPhoneToJoinScreen("Host left. Join a new room.");
 });
 
 socket.on("player:voteRejected", (message) => {
