@@ -23,6 +23,7 @@ const rooms = {};
 const unityHosts = {};
 
 const MAX_PLAYERS_PER_ROOM = 5;
+const MAX_DRAWING_DATA_LENGTH = 1500000;
 
 function makeRoomCode() {
   let roomCode = Math.floor(1000 + Math.random() * 9000).toString();
@@ -58,6 +59,10 @@ function makeNewRoomObject() {
     passwordPanicClueGiverId: null,
     passwordPanicClueGiverIndex: 0,
     passwordPanicRoundFinished: false,
+
+    currentDrawingPrompt: null,
+    drawings: {},
+    drawingRoundFinished: false,
   };
 }
 
@@ -164,7 +169,6 @@ function makeCopycatResultText(room) {
   let correctGuessers = [];
   let allGuessesText = "";
 
-  // This makes the target player's answer show in the Unity answer boxes.
   allGuessesText += "- " + targetName + ": " + targetAnswer + " TARGET\n";
 
   room.players.forEach((player) => {
@@ -480,6 +484,66 @@ function forcePasswordPanicClue(roomCode) {
   console.log("Password Panic clue forced:", room.currentPasswordPanicClue);
 }
 
+function finishDrawingRound(roomCode) {
+  const room = rooms[roomCode];
+
+  if (!room) return;
+
+  if (room.drawingRoundFinished === true) {
+    return;
+  }
+
+  room.drawingRoundFinished = true;
+
+  const drawings = [];
+  let drawingsText = "";
+
+  room.players.forEach((player) => {
+    const drawingDataUrl = room.drawings[player.id];
+
+    if (drawingDataUrl) {
+      drawings.push({
+        playerId: player.id,
+        playerName: player.name,
+        drawingDataUrl: drawingDataUrl,
+      });
+
+      drawingsText += "- " + player.name + ": Drawing submitted\n";
+    } else {
+      drawingsText += "- " + player.name + ": No drawing\n";
+    }
+  });
+
+  const resultText =
+    "SKETCH STACK RESULTS\n\n" +
+    "Prompt:\n" +
+    room.currentDrawingPrompt +
+    "\n\n" +
+    "Drawings:\n" +
+    drawingsText;
+
+  sendToUnity(roomCode, {
+    type: "drawingResults",
+    prompt: room.currentDrawingPrompt,
+    resultText: resultText,
+    players: room.players,
+    drawings: drawings,
+  });
+
+  sendToUnity(roomCode, {
+    type: "sketchStackResults",
+    prompt: room.currentDrawingPrompt,
+    resultText: resultText,
+    players: room.players,
+    drawings: drawings,
+  });
+
+  io.to(roomCode).emit("game:drawingFinished");
+  io.to(roomCode).emit("game:sketchStackFinished");
+
+  console.log("Sketch Stack finished:", resultText);
+}
+
 wss.on("connection", (ws) => {
   console.log("Unity host connected.");
 
@@ -540,6 +604,15 @@ wss.on("connection", (ws) => {
       if (!room.currentPasswordPanicWord) return;
 
       finishPasswordPanicRound(message.roomCode);
+    }
+
+    if (message.type === "forceFinishDrawing" || message.type === "forceFinishSketchStack") {
+      const room = rooms[message.roomCode];
+
+      if (!room) return;
+      if (!room.currentDrawingPrompt) return;
+
+      finishDrawingRound(message.roomCode);
     }
 
     if (message.type === "startQuestion") {
@@ -708,6 +781,52 @@ wss.on("connection", (ws) => {
       console.log("Secret word:", message.secretWord);
     }
 
+    if (message.type === "startDrawing" || message.type === "startSketchStack") {
+      const room = rooms[message.roomCode];
+
+      if (!room) return;
+
+      if (room.players.length < 1) {
+        sendToUnity(message.roomCode, {
+          type: "drawingError",
+          message: "Need at least 1 player for Sketch Stack.",
+        });
+        return;
+      }
+
+      if (message.resetScores === true) {
+        resetScores(room);
+      }
+
+      room.currentDrawingPrompt = message.prompt;
+      room.drawings = {};
+      room.drawingRoundFinished = false;
+
+      io.to(message.roomCode).emit("game:drawingStarted", {
+        prompt: message.prompt,
+        players: room.players,
+      });
+
+      io.to(message.roomCode).emit("game:sketchStackStarted", {
+        prompt: message.prompt,
+        players: room.players,
+      });
+
+      sendToUnity(message.roomCode, {
+        type: "drawingStarted",
+        prompt: message.prompt,
+        players: room.players,
+      });
+
+      sendToUnity(message.roomCode, {
+        type: "sketchStackStarted",
+        prompt: message.prompt,
+        players: room.players,
+      });
+
+      console.log("Sketch Stack started:", message.prompt);
+    }
+
     if (message.type === "returnToLobby") {
       closeRoomAndCreateNewRoom(
         ws,
@@ -742,6 +861,10 @@ wss.on("connection", (ws) => {
       room.passwordPanicClueGiverId = null;
       room.passwordPanicClueGiverIndex = 0;
       room.passwordPanicRoundFinished = false;
+
+      room.currentDrawingPrompt = null;
+      room.drawings = {};
+      room.drawingRoundFinished = false;
 
       resetScores(room);
 
@@ -1082,6 +1205,76 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("player:submitDrawing", ({ roomCode, drawingDataUrl }) => {
+    const room = rooms[roomCode];
+
+    if (!room) return;
+
+    if (!room.currentDrawingPrompt) {
+      socket.emit("player:drawingRejected", "No Sketch Stack round is active.");
+      return;
+    }
+
+    if (room.drawingRoundFinished === true) {
+      socket.emit("player:drawingRejected", "This drawing round is already finished.");
+      return;
+    }
+
+    const player = getPlayer(room, socket.id);
+
+    if (!player) {
+      socket.emit("player:drawingRejected", "You are not in this room.");
+      return;
+    }
+
+    if (room.drawings[socket.id]) {
+      socket.emit("player:drawingRejected", "You already submitted a drawing.");
+      return;
+    }
+
+    if (!drawingDataUrl || typeof drawingDataUrl !== "string") {
+      socket.emit("player:drawingRejected", "Drawing was not sent correctly.");
+      return;
+    }
+
+    if (!drawingDataUrl.startsWith("data:image/png;base64,")) {
+      socket.emit("player:drawingRejected", "Drawing must be a PNG image.");
+      return;
+    }
+
+    if (drawingDataUrl.length > MAX_DRAWING_DATA_LENGTH) {
+      socket.emit("player:drawingRejected", "Drawing is too large. Try clearing and drawing again.");
+      return;
+    }
+
+    room.drawings[socket.id] = drawingDataUrl;
+
+    const totalDrawings = Object.keys(room.drawings).length;
+    const totalPlayers = room.players.length;
+
+    sendToUnity(roomCode, {
+      type: "drawingSubmitted",
+      totalDrawings,
+      totalPlayers,
+      playerId: socket.id,
+      playerName: player.name,
+    });
+
+    sendToUnity(roomCode, {
+      type: "sketchStackDrawingSubmitted",
+      totalDrawings,
+      totalPlayers,
+      playerId: socket.id,
+      playerName: player.name,
+    });
+
+    console.log(player.name + " submitted a drawing.");
+
+    if (totalDrawings >= totalPlayers) {
+      finishDrawingRound(roomCode);
+    }
+  });
+
   socket.on("disconnect", () => {
     console.log("Phone disconnected:", socket.id);
 
@@ -1105,6 +1298,10 @@ io.on("connection", (socket) => {
 
       if (room.passwordPanicGuesses) {
         delete room.passwordPanicGuesses[socket.id];
+      }
+
+      if (room.drawings) {
+        delete room.drawings[socket.id];
       }
 
       if (room.players.length !== oldLength) {
