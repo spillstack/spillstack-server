@@ -67,6 +67,26 @@
     <p id="passwordPanicMessage"></p>
   </div>
 
+  <!-- DRAWING SCREEN -->
+  <div id="drawingScreen" class="screen hidden">
+    <h1>Sketch Stack</h1>
+
+    <h2 id="drawingPromptText">Draw this prompt</h2>
+
+    <canvas 
+      id="drawingCanvas" 
+      width="350" 
+      height="350">
+    </canvas>
+
+    <div id="drawingButtons">
+      <button id="clearDrawingButton" onclick="clearDrawing()">Clear</button>
+      <button id="submitDrawingButton" onclick="submitDrawing()">Submit Drawing</button>
+    </div>
+
+    <p id="drawingMessage"></p>
+  </div>
+
   <!-- DONE SCREEN -->
   <div id="doneScreen" class="screen hidden">
     <h1 id="doneTitle">Locked in!</h1>
