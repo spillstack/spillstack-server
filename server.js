@@ -24,6 +24,20 @@ const unityHosts = {};
 
 const MAX_PLAYERS_PER_ROOM = 5;
 const MAX_DRAWING_DATA_LENGTH = 1500000;
+const MAX_SKETCH_STACK_ROUNDS = 5;
+
+const sketchStackFallbackPrompts = [
+  "Draw a dog driving a car.",
+  "Draw a pizza going to school.",
+  "Draw a robot at the beach.",
+  "Draw a superhero with tiny arms.",
+  "Draw a fish wearing sunglasses.",
+  "Draw a cat robbing a bank.",
+  "Draw a potato winning a race.",
+  "Draw a monster eating homework.",
+  "Draw a bird working at a store.",
+  "Draw a frog playing basketball.",
+];
 
 function makeRoomCode() {
   let roomCode = Math.floor(1000 + Math.random() * 9000).toString();
@@ -63,6 +77,15 @@ function makeNewRoomObject() {
     currentDrawingPrompt: null,
     drawings: {},
     drawingRoundFinished: false,
+
+    sketchStackPlayerPrompts: [],
+    sketchStackUsedPrompts: [],
+    sketchStackRoundNumber: 0,
+    sketchStackDrawings: {},
+    sketchStackVotes: {},
+    sketchStackVotingStarted: false,
+    sketchStackRoundFinished: false,
+    sketchStackPromptPhaseStarted: false,
   };
 }
 
@@ -126,6 +149,27 @@ function getPlayerName(room, playerId) {
 function resetScores(room) {
   room.players.forEach((player) => {
     player.score = 0;
+  });
+}
+
+function makeLeaderboard(room) {
+  const leaderboard = room.players.map((player) => {
+    return {
+      playerId: player.id,
+      playerName: player.name,
+      score: player.score || 0,
+    };
+  });
+
+  leaderboard.sort((a, b) => b.score - a.score);
+
+  return leaderboard.map((player, index) => {
+    return {
+      place: index + 1,
+      playerId: player.playerId,
+      playerName: player.playerName,
+      score: player.score,
+    };
   });
 }
 
@@ -484,22 +528,131 @@ function forcePasswordPanicClue(roomCode) {
   console.log("Password Panic clue forced:", room.currentPasswordPanicClue);
 }
 
-function finishDrawingRound(roomCode) {
+function pickSketchStackPrompt(room) {
+  const usablePlayerPrompts = room.sketchStackPlayerPrompts
+    .map((promptData) => promptData.prompt)
+    .filter((prompt) => prompt && prompt.trim() !== "");
+
+  const fullPromptPool = usablePlayerPrompts.concat(sketchStackFallbackPrompts);
+
+  for (let i = 0; i < fullPromptPool.length; i++) {
+    const prompt = fullPromptPool[i];
+
+    if (!room.sketchStackUsedPrompts.includes(prompt)) {
+      room.sketchStackUsedPrompts.push(prompt);
+      return prompt;
+    }
+  }
+
+  const randomIndex = Math.floor(Math.random() * sketchStackFallbackPrompts.length);
+  const fallbackPrompt = sketchStackFallbackPrompts[randomIndex];
+
+  room.sketchStackUsedPrompts.push(fallbackPrompt);
+  return fallbackPrompt;
+}
+
+function startSketchStackPromptPhase(roomCode, resetScoresNow) {
   const room = rooms[roomCode];
 
   if (!room) return;
 
-  if (room.drawingRoundFinished === true) {
+  if (resetScoresNow === true) {
+    resetScores(room);
+  }
+
+  room.sketchStackPlayerPrompts = [];
+  room.sketchStackUsedPrompts = [];
+  room.sketchStackRoundNumber = 0;
+  room.sketchStackDrawings = {};
+  room.sketchStackVotes = {};
+  room.sketchStackVotingStarted = false;
+  room.sketchStackRoundFinished = false;
+  room.sketchStackPromptPhaseStarted = true;
+  room.currentDrawingPrompt = null;
+  room.drawings = {};
+  room.drawingRoundFinished = false;
+
+  io.to(roomCode).emit("game:sketchStackPromptPhaseStarted", {
+    players: room.players,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
+
+  sendToUnity(roomCode, {
+    type: "sketchStackPromptPhaseStarted",
+    players: room.players,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
+
+  console.log("Sketch Stack prompt phase started.");
+}
+
+function startSketchStackRound(roomCode, manualPrompt) {
+  const room = rooms[roomCode];
+
+  if (!room) return;
+
+  if (room.players.length < 1) {
+    sendToUnity(roomCode, {
+      type: "drawingError",
+      message: "Need at least 1 player for Sketch Stack.",
+    });
     return;
   }
 
-  room.drawingRoundFinished = true;
+  if (room.sketchStackRoundNumber >= MAX_SKETCH_STACK_ROUNDS) {
+    sendSketchStackGameOver(roomCode);
+    return;
+  }
 
+  const pickedPrompt = manualPrompt && manualPrompt.trim() !== "" ? manualPrompt.trim() : pickSketchStackPrompt(room);
+
+  room.sketchStackRoundNumber++;
+  room.currentDrawingPrompt = pickedPrompt;
+  room.drawings = {};
+  room.sketchStackDrawings = {};
+  room.sketchStackVotes = {};
+  room.drawingRoundFinished = false;
+  room.sketchStackVotingStarted = false;
+  room.sketchStackRoundFinished = false;
+
+  io.to(roomCode).emit("game:drawingStarted", {
+    prompt: pickedPrompt,
+    players: room.players,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
+
+  io.to(roomCode).emit("game:sketchStackStarted", {
+    prompt: pickedPrompt,
+    players: room.players,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
+
+  sendToUnity(roomCode, {
+    type: "drawingStarted",
+    prompt: pickedPrompt,
+    players: room.players,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
+
+  sendToUnity(roomCode, {
+    type: "sketchStackStarted",
+    prompt: pickedPrompt,
+    players: room.players,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
+
+  console.log("Sketch Stack round started:", pickedPrompt);
+}
+
+function getSketchStackDrawingsArray(room) {
   const drawings = [];
-  let drawingsText = "";
 
   room.players.forEach((player) => {
-    const drawingDataUrl = room.drawings[player.id];
+    const drawingDataUrl = room.sketchStackDrawings[player.id] || room.drawings[player.id];
 
     if (drawingDataUrl) {
       drawings.push({
@@ -507,19 +660,152 @@ function finishDrawingRound(roomCode) {
         playerName: player.name,
         drawingDataUrl: drawingDataUrl,
       });
-
-      drawingsText += "- " + player.name + ": Drawing submitted\n";
-    } else {
-      drawingsText += "- " + player.name + ": No drawing\n";
     }
   });
 
+  return drawings;
+}
+
+function startSketchStackVoting(roomCode) {
+  const room = rooms[roomCode];
+
+  if (!room) return;
+
+  if (room.sketchStackVotingStarted === true) {
+    return;
+  }
+
+  room.sketchStackVotingStarted = true;
+
+  const drawings = getSketchStackDrawingsArray(room);
+
+  if (drawings.length <= 1) {
+    finishSketchStackRound(roomCode);
+    return;
+  }
+
+  room.players.forEach((player) => {
+    const drawingsForThisPlayer = drawings.filter((drawing) => drawing.playerId !== player.id);
+
+    io.to(player.id).emit("game:sketchStackVotingStarted", {
+      prompt: room.currentDrawingPrompt,
+      drawings: drawingsForThisPlayer,
+      roundNumber: room.sketchStackRoundNumber,
+      maxRounds: MAX_SKETCH_STACK_ROUNDS,
+    });
+  });
+
+  sendToUnity(roomCode, {
+    type: "sketchStackVotingStarted",
+    prompt: room.currentDrawingPrompt,
+    drawings: drawings,
+    totalDrawings: drawings.length,
+    players: room.players,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
+
+  console.log("Sketch Stack voting started.");
+}
+
+function getEligibleSketchStackVoters(room) {
+  const drawings = getSketchStackDrawingsArray(room);
+
+  return room.players.filter((player) => {
+    const drawingsTheyCanVoteFor = drawings.filter((drawing) => drawing.playerId !== player.id);
+    return drawingsTheyCanVoteFor.length > 0;
+  });
+}
+
+function finishSketchStackRound(roomCode) {
+  const room = rooms[roomCode];
+
+  if (!room) return;
+
+  if (room.sketchStackRoundFinished === true) {
+    return;
+  }
+
+  room.sketchStackRoundFinished = true;
+  room.drawingRoundFinished = true;
+
+  const drawings = getSketchStackDrawingsArray(room);
+  const voteCounts = {};
+
+  drawings.forEach((drawing) => {
+    voteCounts[drawing.playerId] = 0;
+  });
+
+  for (const voterId in room.sketchStackVotes) {
+    const votedPlayerId = room.sketchStackVotes[voterId];
+
+    if (voteCounts[votedPlayerId] !== undefined) {
+      voteCounts[votedPlayerId]++;
+    }
+  }
+
+  let highestVotes = 0;
+
+  for (const playerId in voteCounts) {
+    if (voteCounts[playerId] > highestVotes) {
+      highestVotes = voteCounts[playerId];
+    }
+  }
+
+  const winners = [];
+
+  if (highestVotes > 0) {
+    for (const playerId in voteCounts) {
+      if (voteCounts[playerId] === highestVotes) {
+        const player = getPlayer(room, playerId);
+
+        if (player) {
+          player.score += 1000;
+
+          winners.push({
+            playerId: player.id,
+            playerName: player.name,
+            votes: highestVotes,
+          });
+        }
+      }
+    }
+  }
+
+  let drawingsText = "";
+
+  drawings.forEach((drawing) => {
+    const votes = voteCounts[drawing.playerId] || 0;
+    drawingsText += "- " + drawing.playerName + ": " + votes + " votes\n";
+  });
+
+  if (drawings.length === 0) {
+    drawingsText = "No drawings were submitted.\n";
+  }
+
+  let winnerText = "";
+
+  if (winners.length > 0) {
+    winners.forEach((winner) => {
+      winnerText += "- " + winner.playerName + " with " + winner.votes + " votes\n";
+    });
+  } else {
+    winnerText = "No winner.\n";
+  }
+
   const resultText =
     "SKETCH STACK RESULTS\n\n" +
+    "Round:\n" +
+    room.sketchStackRoundNumber +
+    "/" +
+    MAX_SKETCH_STACK_ROUNDS +
+    "\n\n" +
     "Prompt:\n" +
     room.currentDrawingPrompt +
     "\n\n" +
-    "Drawings:\n" +
+    "Winner:\n" +
+    winnerText +
+    "\nVotes:\n" +
     drawingsText;
 
   sendToUnity(roomCode, {
@@ -528,6 +814,10 @@ function finishDrawingRound(roomCode) {
     resultText: resultText,
     players: room.players,
     drawings: drawings,
+    voteCounts: voteCounts,
+    winners: winners,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
   });
 
   sendToUnity(roomCode, {
@@ -536,12 +826,80 @@ function finishDrawingRound(roomCode) {
     resultText: resultText,
     players: room.players,
     drawings: drawings,
+    voteCounts: voteCounts,
+    winners: winners,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
   });
 
-  io.to(roomCode).emit("game:drawingFinished");
-  io.to(roomCode).emit("game:sketchStackFinished");
+  io.to(roomCode).emit("game:drawingFinished", {
+    prompt: room.currentDrawingPrompt,
+    winners: winners,
+    voteCounts: voteCounts,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
 
-  console.log("Sketch Stack finished:", resultText);
+  io.to(roomCode).emit("game:sketchStackFinished", {
+    prompt: room.currentDrawingPrompt,
+    winners: winners,
+    voteCounts: voteCounts,
+    roundNumber: room.sketchStackRoundNumber,
+    maxRounds: MAX_SKETCH_STACK_ROUNDS,
+  });
+
+  console.log("Sketch Stack round finished:", resultText);
+
+  if (room.sketchStackRoundNumber >= MAX_SKETCH_STACK_ROUNDS) {
+    sendSketchStackGameOver(roomCode);
+  }
+}
+
+function sendSketchStackGameOver(roomCode) {
+  const room = rooms[roomCode];
+
+  if (!room) return;
+
+  const leaderboard = makeLeaderboard(room);
+
+  let leaderboardText = "SKETCH STACK FINAL LEADERBOARD\n\n";
+
+  leaderboard.forEach((entry) => {
+    leaderboardText +=
+      entry.place +
+      ". " +
+      entry.playerName +
+      " - " +
+      entry.score +
+      " pts\n";
+  });
+
+  sendToUnity(roomCode, {
+    type: "sketchStackGameOver",
+    players: room.players,
+    leaderboard: leaderboard,
+    leaderboardText: leaderboardText,
+  });
+
+  io.to(roomCode).emit("game:sketchStackGameOver", {
+    leaderboard: leaderboard,
+  });
+
+  console.log("Sketch Stack game over:", leaderboardText);
+}
+
+function resetSketchStack(room) {
+  room.currentDrawingPrompt = null;
+  room.drawings = {};
+  room.drawingRoundFinished = false;
+  room.sketchStackPlayerPrompts = [];
+  room.sketchStackUsedPrompts = [];
+  room.sketchStackRoundNumber = 0;
+  room.sketchStackDrawings = {};
+  room.sketchStackVotes = {};
+  room.sketchStackVotingStarted = false;
+  room.sketchStackRoundFinished = false;
+  room.sketchStackPromptPhaseStarted = false;
 }
 
 wss.on("connection", (ws) => {
@@ -612,7 +970,16 @@ wss.on("connection", (ws) => {
       if (!room) return;
       if (!room.currentDrawingPrompt) return;
 
-      finishDrawingRound(message.roomCode);
+      startSketchStackVoting(message.roomCode);
+    }
+
+    if (message.type === "forceFinishSketchStackVoting") {
+      const room = rooms[message.roomCode];
+
+      if (!room) return;
+      if (!room.currentDrawingPrompt) return;
+
+      finishSketchStackRound(message.roomCode);
     }
 
     if (message.type === "startQuestion") {
@@ -781,50 +1148,28 @@ wss.on("connection", (ws) => {
       console.log("Secret word:", message.secretWord);
     }
 
+    if (message.type === "startSketchStackPromptPhase") {
+      startSketchStackPromptPhase(message.roomCode, message.resetScores === true);
+    }
+
+    if (message.type === "startSketchStackRound") {
+      startSketchStackRound(message.roomCode, message.prompt || "");
+    }
+
     if (message.type === "startDrawing" || message.type === "startSketchStack") {
       const room = rooms[message.roomCode];
 
       if (!room) return;
 
-      if (room.players.length < 1) {
-        sendToUnity(message.roomCode, {
-          type: "drawingError",
-          message: "Need at least 1 player for Sketch Stack.",
-        });
-        return;
-      }
-
       if (message.resetScores === true) {
         resetScores(room);
       }
 
-      room.currentDrawingPrompt = message.prompt;
-      room.drawings = {};
-      room.drawingRoundFinished = false;
-
-      io.to(message.roomCode).emit("game:drawingStarted", {
-        prompt: message.prompt,
-        players: room.players,
-      });
-
-      io.to(message.roomCode).emit("game:sketchStackStarted", {
-        prompt: message.prompt,
-        players: room.players,
-      });
-
-      sendToUnity(message.roomCode, {
-        type: "drawingStarted",
-        prompt: message.prompt,
-        players: room.players,
-      });
-
-      sendToUnity(message.roomCode, {
-        type: "sketchStackStarted",
-        prompt: message.prompt,
-        players: room.players,
-      });
-
-      console.log("Sketch Stack started:", message.prompt);
+      if (message.prompt && message.prompt.trim() !== "") {
+        startSketchStackRound(message.roomCode, message.prompt);
+      } else {
+        startSketchStackPromptPhase(message.roomCode, message.resetScores === true);
+      }
     }
 
     if (message.type === "returnToLobby") {
@@ -862,10 +1207,7 @@ wss.on("connection", (ws) => {
       room.passwordPanicClueGiverIndex = 0;
       room.passwordPanicRoundFinished = false;
 
-      room.currentDrawingPrompt = null;
-      room.drawings = {};
-      room.drawingRoundFinished = false;
-
+      resetSketchStack(room);
       resetScores(room);
 
       sendToUnity(message.roomCode, {
@@ -1205,6 +1547,66 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("player:submitSketchStackPrompt", ({ roomCode, prompt }) => {
+    const room = rooms[roomCode];
+
+    if (!room) return;
+
+    if (!room.sketchStackPromptPhaseStarted) {
+      socket.emit("player:sketchStackPromptRejected", "Prompt phase is not active.");
+      return;
+    }
+
+    const player = getPlayer(room, socket.id);
+
+    if (!player) {
+      socket.emit("player:sketchStackPromptRejected", "You are not in this room.");
+      return;
+    }
+
+    if (!prompt || prompt.trim() === "") {
+      socket.emit("player:sketchStackPromptRejected", "Type a prompt first.");
+      return;
+    }
+
+    const alreadySubmitted = room.sketchStackPlayerPrompts.find((promptData) => promptData.playerId === socket.id);
+
+    if (alreadySubmitted) {
+      socket.emit("player:sketchStackPromptRejected", "You already submitted a prompt.");
+      return;
+    }
+
+    room.sketchStackPlayerPrompts.push({
+      playerId: socket.id,
+      playerName: player.name,
+      prompt: prompt.trim(),
+    });
+
+    const totalPrompts = room.sketchStackPlayerPrompts.length;
+    const totalPlayers = room.players.length;
+
+    socket.emit("player:sketchStackPromptAccepted");
+
+    sendToUnity(roomCode, {
+      type: "sketchStackPromptSubmitted",
+      totalPrompts,
+      totalPlayers,
+      playerId: socket.id,
+      playerName: player.name,
+    });
+
+    console.log(player.name + " submitted Sketch Stack prompt:", prompt.trim());
+
+    if (totalPrompts >= totalPlayers) {
+      sendToUnity(roomCode, {
+        type: "sketchStackPromptsReady",
+        totalPrompts,
+        totalPlayers,
+        prompts: room.sketchStackPlayerPrompts,
+      });
+    }
+  });
+
   socket.on("player:submitDrawing", ({ roomCode, drawingDataUrl }) => {
     const room = rooms[roomCode];
 
@@ -1215,7 +1617,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (room.drawingRoundFinished === true) {
+    if (room.drawingRoundFinished === true || room.sketchStackRoundFinished === true) {
       socket.emit("player:drawingRejected", "This drawing round is already finished.");
       return;
     }
@@ -1227,7 +1629,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (room.drawings[socket.id]) {
+    if (room.sketchStackDrawings[socket.id] || room.drawings[socket.id]) {
       socket.emit("player:drawingRejected", "You already submitted a drawing.");
       return;
     }
@@ -1248,8 +1650,9 @@ io.on("connection", (socket) => {
     }
 
     room.drawings[socket.id] = drawingDataUrl;
+    room.sketchStackDrawings[socket.id] = drawingDataUrl;
 
-    const totalDrawings = Object.keys(room.drawings).length;
+    const totalDrawings = Object.keys(room.sketchStackDrawings).length;
     const totalPlayers = room.players.length;
 
     sendToUnity(roomCode, {
@@ -1271,8 +1674,74 @@ io.on("connection", (socket) => {
     console.log(player.name + " submitted a drawing.");
 
     if (totalDrawings >= totalPlayers) {
-      finishDrawingRound(roomCode);
+      startSketchStackVoting(roomCode);
     }
+  });
+
+  socket.on("player:submitSketchStackVote", ({ roomCode, votedPlayerId }) => {
+    const room = rooms[roomCode];
+
+    if (!room) return;
+
+    if (!room.sketchStackVotingStarted) {
+      socket.emit("player:sketchStackVoteRejected", "Voting has not started yet.");
+      return;
+    }
+
+    if (room.sketchStackRoundFinished === true) {
+      socket.emit("player:sketchStackVoteRejected", "This round is already finished.");
+      return;
+    }
+
+    const voter = getPlayer(room, socket.id);
+
+    if (!voter) {
+      socket.emit("player:sketchStackVoteRejected", "You are not in this room.");
+      return;
+    }
+
+    if (socket.id === votedPlayerId) {
+      socket.emit("player:sketchStackVoteRejected", "You cannot vote for your own drawing.");
+      return;
+    }
+
+    if (!room.sketchStackDrawings[votedPlayerId] && !room.drawings[votedPlayerId]) {
+      socket.emit("player:sketchStackVoteRejected", "That drawing was not found.");
+      return;
+    }
+
+    if (room.sketchStackVotes[socket.id]) {
+      socket.emit("player:sketchStackVoteRejected", "You already voted.");
+      return;
+    }
+
+    room.sketchStackVotes[socket.id] = votedPlayerId;
+
+    const totalVotes = Object.keys(room.sketchStackVotes).length;
+    const eligibleVoters = getEligibleSketchStackVoters(room);
+    const totalVotesNeeded = eligibleVoters.length;
+
+    socket.emit("player:sketchStackVoteAccepted");
+
+    sendToUnity(roomCode, {
+      type: "sketchStackVoteSubmitted",
+      totalVotes,
+      totalVotesNeeded,
+      voterId: socket.id,
+      voterName: voter.name,
+      votedPlayerId,
+      votedPlayerName: getPlayerName(room, votedPlayerId),
+    });
+
+    console.log(voter.name + " voted for " + getPlayerName(room, votedPlayerId));
+
+    if (totalVotes >= totalVotesNeeded) {
+      finishSketchStackRound(roomCode);
+    }
+  });
+
+  socket.on("player:submitDrawingVote", ({ roomCode, votedPlayerId }) => {
+    socket.emit("player:submitSketchStackVote", { roomCode, votedPlayerId });
   });
 
   socket.on("disconnect", () => {
@@ -1302,6 +1771,20 @@ io.on("connection", (socket) => {
 
       if (room.drawings) {
         delete room.drawings[socket.id];
+      }
+
+      if (room.sketchStackDrawings) {
+        delete room.sketchStackDrawings[socket.id];
+      }
+
+      if (room.sketchStackVotes) {
+        delete room.sketchStackVotes[socket.id];
+      }
+
+      if (room.sketchStackPlayerPrompts) {
+        room.sketchStackPlayerPrompts = room.sketchStackPlayerPrompts.filter((promptData) => {
+          return promptData.playerId !== socket.id;
+        });
       }
 
       if (room.players.length !== oldLength) {
