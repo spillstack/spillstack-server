@@ -5,11 +5,6 @@ let myPlayerId = "";
 let passwordPanicMode = "";
 let isJoining = false;
 
-// DRAWING VARIABLES
-let drawingCanvas = null;
-let drawingContext = null;
-let isDrawing = false;
-
 function showScreen(screenId) {
   document.getElementById("joinScreen").classList.add("hidden");
   document.getElementById("waitingScreen").classList.add("hidden");
@@ -17,7 +12,6 @@ function showScreen(screenId) {
   document.getElementById("copycatScreen").classList.add("hidden");
   document.getElementById("hotSeatScreen").classList.add("hidden");
   document.getElementById("passwordPanicScreen").classList.add("hidden");
-  document.getElementById("drawingScreen").classList.add("hidden");
   document.getElementById("doneScreen").classList.add("hidden");
 
   document.getElementById(screenId).classList.remove("hidden");
@@ -169,136 +163,6 @@ function submitPasswordPanic() {
 
   document.getElementById("passwordPanicMessage").innerText = "Wait for the game to start.";
 }
-
-// DRAWING CODE
-
-function setupDrawingCanvas() {
-  drawingCanvas = document.getElementById("drawingCanvas");
-
-  if (drawingCanvas == null) {
-    return;
-  }
-
-  drawingContext = drawingCanvas.getContext("2d");
-
-  drawingContext.fillStyle = "white";
-  drawingContext.fillRect(0, 0, drawingCanvas.width, drawingCanvas.height);
-
-  drawingContext.lineWidth = 5;
-  drawingContext.lineCap = "round";
-  drawingContext.lineJoin = "round";
-  drawingContext.strokeStyle = "black";
-
-  drawingCanvas.addEventListener("mousedown", startDrawing);
-  drawingCanvas.addEventListener("mousemove", draw);
-  drawingCanvas.addEventListener("mouseup", stopDrawing);
-  drawingCanvas.addEventListener("mouseleave", stopDrawing);
-
-  drawingCanvas.addEventListener("touchstart", startDrawing);
-  drawingCanvas.addEventListener("touchmove", draw);
-  drawingCanvas.addEventListener("touchend", stopDrawing);
-  drawingCanvas.addEventListener("touchcancel", stopDrawing);
-}
-
-function getCanvasPosition(event) {
-  const rect = drawingCanvas.getBoundingClientRect();
-
-  let clientX;
-  let clientY;
-
-  if (event.touches && event.touches.length > 0) {
-    clientX = event.touches[0].clientX;
-    clientY = event.touches[0].clientY;
-  } else {
-    clientX = event.clientX;
-    clientY = event.clientY;
-  }
-
-  const scaleX = drawingCanvas.width / rect.width;
-  const scaleY = drawingCanvas.height / rect.height;
-
-  return {
-    x: (clientX - rect.left) * scaleX,
-    y: (clientY - rect.top) * scaleY,
-  };
-}
-
-function startDrawing(event) {
-  event.preventDefault();
-
-  if (drawingCanvas == null || drawingContext == null) {
-    return;
-  }
-
-  isDrawing = true;
-
-  const position = getCanvasPosition(event);
-
-  drawingContext.beginPath();
-  drawingContext.moveTo(position.x, position.y);
-}
-
-function draw(event) {
-  event.preventDefault();
-
-  if (!isDrawing) {
-    return;
-  }
-
-  if (drawingCanvas == null || drawingContext == null) {
-    return;
-  }
-
-  const position = getCanvasPosition(event);
-
-  drawingContext.lineTo(position.x, position.y);
-  drawingContext.stroke();
-}
-
-function stopDrawing(event) {
-  if (event) {
-    event.preventDefault();
-  }
-
-  isDrawing = false;
-}
-
-function clearDrawing() {
-  if (drawingCanvas == null || drawingContext == null) {
-    return;
-  }
-
-  drawingContext.fillStyle = "white";
-  drawingContext.fillRect(0, 0, drawingCanvas.width, drawingCanvas.height);
-
-  drawingContext.lineWidth = 5;
-  drawingContext.lineCap = "round";
-  drawingContext.lineJoin = "round";
-  drawingContext.strokeStyle = "black";
-
-  document.getElementById("drawingMessage").innerText = "";
-}
-
-function submitDrawing() {
-  if (drawingCanvas == null) {
-    document.getElementById("drawingMessage").innerText = "Drawing canvas not ready.";
-    return;
-  }
-
-  const drawingDataUrl = drawingCanvas.toDataURL("image/png");
-
-  socket.emit("player:submitDrawing", {
-    roomCode: currentRoomCode,
-    drawingDataUrl: drawingDataUrl,
-  });
-
-  setDoneScreen("Drawing locked in!", "Waiting for everyone else...");
-  showScreen("doneScreen");
-}
-
-window.addEventListener("load", () => {
-  setupDrawingCanvas();
-});
 
 socket.on("player:joinSuccess", (data) => {
   myPlayerId = data.player.id;
@@ -582,59 +446,6 @@ socket.on("player:passwordPanicRejected", (message) => {
 
 socket.on("game:passwordPanicFinished", () => {
   passwordPanicMode = "";
-  setDoneScreen("Round finished!", "Look at the main screen for the results.");
-  showScreen("doneScreen");
-});
-
-// DRAWING ROUND STARTED
-socket.on("game:drawingStarted", (data) => {
-  showScreen("drawingScreen");
-
-  const promptText = document.getElementById("drawingPromptText");
-  const messageText = document.getElementById("drawingMessage");
-  const submitButton = document.getElementById("submitDrawingButton");
-
-  promptText.innerText =
-    "SKETCH STACK\n\n" +
-    "Draw this:\n" +
-    data.prompt;
-
-  messageText.innerText = "";
-  submitButton.disabled = false;
-
-  clearDrawing();
-});
-
-// This is here in case we name the server event Sketch Stack later.
-socket.on("game:sketchStackStarted", (data) => {
-  showScreen("drawingScreen");
-
-  const promptText = document.getElementById("drawingPromptText");
-  const messageText = document.getElementById("drawingMessage");
-  const submitButton = document.getElementById("submitDrawingButton");
-
-  promptText.innerText =
-    "SKETCH STACK\n\n" +
-    "Draw this:\n" +
-    data.prompt;
-
-  messageText.innerText = "";
-  submitButton.disabled = false;
-
-  clearDrawing();
-});
-
-socket.on("player:drawingRejected", (message) => {
-  alert(message);
-  showScreen("drawingScreen");
-});
-
-socket.on("game:drawingFinished", () => {
-  setDoneScreen("Round finished!", "Look at the main screen for the results.");
-  showScreen("doneScreen");
-});
-
-socket.on("game:sketchStackFinished", () => {
   setDoneScreen("Round finished!", "Look at the main screen for the results.");
   showScreen("doneScreen");
 });
