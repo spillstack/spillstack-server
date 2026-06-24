@@ -5,21 +5,55 @@ let myPlayerId = "";
 let passwordPanicMode = "";
 let isJoining = false;
 
-function showScreen(screenId) {
-  document.getElementById("joinScreen").classList.add("hidden");
-  document.getElementById("waitingScreen").classList.add("hidden");
-  document.getElementById("voteScreen").classList.add("hidden");
-  document.getElementById("copycatScreen").classList.add("hidden");
-  document.getElementById("hotSeatScreen").classList.add("hidden");
-  document.getElementById("passwordPanicScreen").classList.add("hidden");
-  document.getElementById("doneScreen").classList.add("hidden");
+let sketchStackCanvas = null;
+let sketchStackContext = null;
+let sketchStackIsDrawing = false;
+let sketchStackLastX = 0;
+let sketchStackLastY = 0;
 
-  document.getElementById(screenId).classList.remove("hidden");
+function showScreen(screenId) {
+  const screens = [
+    "joinScreen",
+    "waitingScreen",
+    "voteScreen",
+    "copycatScreen",
+    "hotSeatScreen",
+    "passwordPanicScreen",
+    "sketchStackPromptScreen",
+    "sketchStackDrawingScreen",
+    "sketchStackVotingScreen",
+    "sketchStackGameOverScreen",
+    "doneScreen",
+  ];
+
+  screens.forEach((id) => {
+    const screen = document.getElementById(id);
+
+    if (screen != null) {
+      screen.classList.add("hidden");
+    }
+  });
+
+  const selectedScreen = document.getElementById(screenId);
+
+  if (selectedScreen != null) {
+    selectedScreen.classList.remove("hidden");
+  } else {
+    console.error("Screen not found:", screenId);
+  }
 }
 
 function setDoneScreen(title, message) {
-  document.getElementById("doneTitle").innerText = title;
-  document.getElementById("doneMessage").innerText = message;
+  const doneTitle = document.getElementById("doneTitle");
+  const doneMessage = document.getElementById("doneMessage");
+
+  if (doneTitle != null) {
+    doneTitle.innerText = title;
+  }
+
+  if (doneMessage != null) {
+    doneMessage.innerText = message;
+  }
 }
 
 function setJoinButtonState(canClick) {
@@ -164,12 +198,194 @@ function submitPasswordPanic() {
   document.getElementById("passwordPanicMessage").innerText = "Wait for the game to start.";
 }
 
+/* ---------------- SKETCH STACK FUNCTIONS ---------------- */
+
+function submitSketchStackPrompt() {
+  const promptInput = document.getElementById("sketchStackPromptInput");
+  const promptMessage = document.getElementById("sketchStackPromptMessage");
+
+  if (promptInput == null) {
+    console.error("sketchStackPromptInput not found");
+    return;
+  }
+
+  const prompt = promptInput.value.trim();
+
+  if (prompt === "") {
+    if (promptMessage != null) {
+      promptMessage.innerText = "Type a prompt first.";
+    }
+    return;
+  }
+
+  socket.emit("player:submitSketchStackPrompt", {
+    roomCode: currentRoomCode,
+    prompt: prompt,
+  });
+
+  setDoneScreen("Prompt sent!", "Waiting for everyone else...");
+  showScreen("doneScreen");
+}
+
+function setupSketchStackCanvas() {
+  sketchStackCanvas = document.getElementById("sketchStackCanvas");
+
+  if (sketchStackCanvas == null) {
+    console.error("sketchStackCanvas not found");
+    return;
+  }
+
+  sketchStackContext = sketchStackCanvas.getContext("2d");
+
+  clearSketchStackDrawing();
+
+  sketchStackContext.lineWidth = 5;
+  sketchStackContext.lineCap = "round";
+  sketchStackContext.lineJoin = "round";
+  sketchStackContext.strokeStyle = "black";
+
+  sketchStackCanvas.onmousedown = startSketchStackDrawing;
+  sketchStackCanvas.onmousemove = drawSketchStackLine;
+  sketchStackCanvas.onmouseup = stopSketchStackDrawing;
+  sketchStackCanvas.onmouseleave = stopSketchStackDrawing;
+
+  sketchStackCanvas.ontouchstart = startSketchStackTouchDrawing;
+  sketchStackCanvas.ontouchmove = drawSketchStackTouchLine;
+  sketchStackCanvas.ontouchend = stopSketchStackDrawing;
+  sketchStackCanvas.ontouchcancel = stopSketchStackDrawing;
+}
+
+function getCanvasPosition(event) {
+  const rect = sketchStackCanvas.getBoundingClientRect();
+
+  const scaleX = sketchStackCanvas.width / rect.width;
+  const scaleY = sketchStackCanvas.height / rect.height;
+
+  return {
+    x: (event.clientX - rect.left) * scaleX,
+    y: (event.clientY - rect.top) * scaleY,
+  };
+}
+
+function startSketchStackDrawing(event) {
+  if (sketchStackCanvas == null || sketchStackContext == null) {
+    return;
+  }
+
+  sketchStackIsDrawing = true;
+
+  const position = getCanvasPosition(event);
+  sketchStackLastX = position.x;
+  sketchStackLastY = position.y;
+}
+
+function drawSketchStackLine(event) {
+  if (!sketchStackIsDrawing || sketchStackContext == null) {
+    return;
+  }
+
+  const position = getCanvasPosition(event);
+
+  sketchStackContext.beginPath();
+  sketchStackContext.moveTo(sketchStackLastX, sketchStackLastY);
+  sketchStackContext.lineTo(position.x, position.y);
+  sketchStackContext.stroke();
+
+  sketchStackLastX = position.x;
+  sketchStackLastY = position.y;
+}
+
+function startSketchStackTouchDrawing(event) {
+  event.preventDefault();
+
+  if (event.touches.length <= 0) {
+    return;
+  }
+
+  startSketchStackDrawing(event.touches[0]);
+}
+
+function drawSketchStackTouchLine(event) {
+  event.preventDefault();
+
+  if (event.touches.length <= 0) {
+    return;
+  }
+
+  drawSketchStackLine(event.touches[0]);
+}
+
+function stopSketchStackDrawing() {
+  sketchStackIsDrawing = false;
+}
+
+function clearSketchStackDrawing() {
+  if (sketchStackCanvas == null) {
+    sketchStackCanvas = document.getElementById("sketchStackCanvas");
+  }
+
+  if (sketchStackCanvas == null) {
+    return;
+  }
+
+  if (sketchStackContext == null) {
+    sketchStackContext = sketchStackCanvas.getContext("2d");
+  }
+
+  sketchStackContext.fillStyle = "white";
+  sketchStackContext.fillRect(0, 0, sketchStackCanvas.width, sketchStackCanvas.height);
+}
+
+function submitSketchStackDrawing() {
+  if (sketchStackCanvas == null) {
+    sketchStackCanvas = document.getElementById("sketchStackCanvas");
+  }
+
+  if (sketchStackCanvas == null) {
+    const message = document.getElementById("sketchStackDrawingMessage");
+
+    if (message != null) {
+      message.innerText = "Drawing area not found.";
+    }
+
+    return;
+  }
+
+  const drawingDataUrl = sketchStackCanvas.toDataURL("image/png");
+
+  socket.emit("player:submitDrawing", {
+    roomCode: currentRoomCode,
+    drawingDataUrl: drawingDataUrl,
+  });
+
+  setDoneScreen("Drawing sent!", "Waiting for everyone else...");
+  showScreen("doneScreen");
+}
+
+function voteSketchStackDrawing(playerId) {
+  socket.emit("player:submitSketchStackVote", {
+    roomCode: currentRoomCode,
+    votedPlayerId: playerId,
+  });
+
+  setDoneScreen("Vote locked in!", "Waiting for everyone else...");
+  showScreen("doneScreen");
+}
+
+/* ---------------- SOCKET EVENTS ---------------- */
+
 socket.on("player:joinSuccess", (data) => {
   myPlayerId = data.player.id;
   currentRoomCode = data.roomCode;
   isJoining = false;
   setJoinButtonState(true);
-  document.getElementById("joinMessage").innerText = "";
+
+  const joinMessage = document.getElementById("joinMessage");
+
+  if (joinMessage != null) {
+    joinMessage.innerText = "";
+  }
+
   showScreen("waitingScreen");
 });
 
@@ -179,10 +395,12 @@ socket.on("player:joinFailed", (message) => {
 
   const joinMessage = document.getElementById("joinMessage");
 
-  if (message.includes("Room is full")) {
-    joinMessage.innerText = "The room is full";
-  } else {
-    joinMessage.innerText = message;
+  if (joinMessage != null) {
+    if (message.includes("Room is full")) {
+      joinMessage.innerText = "The room is full";
+    } else {
+      joinMessage.innerText = message;
+    }
   }
 
   showScreen("joinScreen");
@@ -449,6 +667,168 @@ socket.on("game:passwordPanicFinished", () => {
   setDoneScreen("Round finished!", "Look at the main screen for the results.");
   showScreen("doneScreen");
 });
+
+/* ---------------- SKETCH STACK EVENTS ---------------- */
+
+socket.on("game:sketchStackPromptPhaseStarted", () => {
+  const promptInput = document.getElementById("sketchStackPromptInput");
+  const promptMessage = document.getElementById("sketchStackPromptMessage");
+
+  if (promptInput != null) {
+    promptInput.value = "";
+  }
+
+  if (promptMessage != null) {
+    promptMessage.innerText = "";
+  }
+
+  showScreen("sketchStackPromptScreen");
+});
+
+socket.on("player:sketchStackPromptAccepted", () => {
+  setDoneScreen("Prompt sent!", "Waiting for the round to start...");
+  showScreen("doneScreen");
+});
+
+socket.on("player:sketchStackPromptRejected", (message) => {
+  alert(message);
+  showScreen("sketchStackPromptScreen");
+});
+
+socket.on("game:drawingStarted", (data) => {
+  showSketchStackDrawingScreen(data);
+});
+
+socket.on("game:sketchStackStarted", (data) => {
+  showSketchStackDrawingScreen(data);
+});
+
+function showSketchStackDrawingScreen(data) {
+  showScreen("sketchStackDrawingScreen");
+
+  const promptText = document.getElementById("sketchStackDrawingPromptText");
+  const messageText = document.getElementById("sketchStackDrawingMessage");
+
+  if (promptText != null) {
+    promptText.innerText =
+      "SKETCH STACK\n\n" +
+      "Round " +
+      data.roundNumber +
+      "/" +
+      data.maxRounds +
+      "\n\nDraw this:\n" +
+      data.prompt;
+  }
+
+  if (messageText != null) {
+    messageText.innerText = "";
+  }
+
+  setupSketchStackCanvas();
+  clearSketchStackDrawing();
+}
+
+socket.on("player:drawingRejected", (message) => {
+  alert(message);
+  showScreen("sketchStackDrawingScreen");
+});
+
+socket.on("game:sketchStackVotingStarted", (data) => {
+  showScreen("sketchStackVotingScreen");
+
+  const votingTitle = document.getElementById("sketchStackVotingTitle");
+  const drawingsList = document.getElementById("sketchStackVotingList");
+
+  if (votingTitle != null) {
+    votingTitle.innerText =
+      "Pick the best drawing\nRound " +
+      data.roundNumber +
+      "/" +
+      data.maxRounds;
+  }
+
+  if (drawingsList != null) {
+    drawingsList.innerHTML = "";
+
+    if (!data.drawings || data.drawings.length === 0) {
+      drawingsList.innerHTML = "<p>No drawings to vote for.</p>";
+      return;
+    }
+
+    data.drawings.forEach((drawing) => {
+      const card = document.createElement("div");
+      card.className = "drawingVoteCard";
+
+      const image = document.createElement("img");
+      image.src = drawing.drawingDataUrl;
+      image.className = "drawingVoteImage";
+
+      const button = document.createElement("button");
+      button.className = "playerButton";
+      button.innerText = "Vote for this drawing";
+
+      button.onclick = () => {
+        voteSketchStackDrawing(drawing.playerId);
+      };
+
+      card.appendChild(image);
+      card.appendChild(button);
+
+      drawingsList.appendChild(card);
+    });
+  }
+});
+
+socket.on("player:sketchStackVoteAccepted", () => {
+  setDoneScreen("Vote locked in!", "Waiting for everyone else...");
+  showScreen("doneScreen");
+});
+
+socket.on("player:sketchStackVoteRejected", (message) => {
+  alert(message);
+  showScreen("sketchStackVotingScreen");
+});
+
+socket.on("game:drawingFinished", () => {
+  setDoneScreen("Round finished!", "Look at the main screen for the results.");
+  showScreen("doneScreen");
+});
+
+socket.on("game:sketchStackFinished", () => {
+  setDoneScreen("Round finished!", "Look at the main screen for the results.");
+  showScreen("doneScreen");
+});
+
+socket.on("game:sketchStackGameOver", (data) => {
+  showScreen("sketchStackGameOverScreen");
+
+  const leaderboardList = document.getElementById("sketchStackLeaderboardList");
+
+  if (leaderboardList != null) {
+    leaderboardList.innerHTML = "";
+
+    if (!data.leaderboard || data.leaderboard.length === 0) {
+      leaderboardList.innerHTML = "<p>No scores yet.</p>";
+      return;
+    }
+
+    data.leaderboard.forEach((entry) => {
+      const row = document.createElement("div");
+      row.className = "leaderboardRow";
+      row.innerText =
+        entry.place +
+        ". " +
+        entry.playerName +
+        " - " +
+        entry.score +
+        " pts";
+
+      leaderboardList.appendChild(row);
+    });
+  }
+});
+
+/* ---------------- OTHER EVENTS ---------------- */
 
 socket.on("game:returnToLobby", () => {
   resetPhoneToJoinScreen("The host returned to the lobby. Please enter the new room code.");
