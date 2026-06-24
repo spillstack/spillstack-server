@@ -13,7 +13,7 @@
     <input id="nameInput" placeholder="Your name" maxlength="15">
     <input id="roomInput" placeholder="Room code">
 
-    <button onclick="joinRoom()">Join Game</button>
+    <button id="joinButton" onclick="joinRoom()">Join Game</button>
 
     <p id="joinMessage"></p>
   </div>
@@ -67,24 +67,46 @@
     <p id="passwordPanicMessage"></p>
   </div>
 
-  <!-- DRAWING SCREEN -->
-  <div id="drawingScreen" class="screen hidden">
+  <!-- SKETCH STACK PROMPT SCREEN -->
+  <div id="sketchStackPromptScreen" class="screen hidden">
+    <h1>Sketch Stack</h1>
+    <p>Write a funny drawing prompt.</p>
+
+    <input id="sketchStackPromptInput" placeholder="Example: Draw a pizza playing basketball" maxlength="80">
+
+    <button onclick="submitSketchStackPrompt()">Submit Prompt</button>
+
+    <p id="sketchStackPromptMessage"></p>
+  </div>
+
+  <!-- SKETCH STACK DRAWING SCREEN -->
+  <div id="sketchStackDrawingScreen" class="screen hidden">
     <h1>Sketch Stack</h1>
 
-    <h2 id="drawingPromptText">Draw this prompt</h2>
+    <p id="sketchStackDrawingPromptText">Draw this prompt</p>
 
-    <canvas 
-      id="drawingCanvas" 
-      width="350" 
-      height="350">
-    </canvas>
+    <canvas id="sketchStackCanvas" width="500" height="500"></canvas>
 
-    <div id="drawingButtons">
-      <button id="clearDrawingButton" onclick="clearDrawing()">Clear</button>
-      <button id="submitDrawingButton" onclick="submitDrawing()">Submit Drawing</button>
-    </div>
+    <button onclick="clearSketchStackDrawing()">Clear</button>
+    <button onclick="submitSketchStackDrawing()">Submit Drawing</button>
 
-    <p id="drawingMessage"></p>
+    <p id="sketchStackDrawingMessage"></p>
+  </div>
+
+  <!-- SKETCH STACK VOTING SCREEN -->
+  <div id="sketchStackVotingScreen" class="screen hidden">
+    <h1 id="sketchStackVotingTitle">Pick the best drawing</h1>
+
+    <div id="sketchStackVotingList"></div>
+  </div>
+
+  <!-- SKETCH STACK GAME OVER SCREEN -->
+  <div id="sketchStackGameOverScreen" class="screen hidden">
+    <h1>Final Leaderboard</h1>
+
+    <div id="sketchStackLeaderboardList"></div>
+
+    <p>Look at the host screen to go back to the lobby.</p>
   </div>
 
   <!-- DONE SCREEN -->
