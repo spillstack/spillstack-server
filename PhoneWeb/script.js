@@ -5,55 +5,40 @@ let myPlayerId = "";
 let passwordPanicMode = "";
 let isJoining = false;
 
-let sketchStackCanvas = null;
-let sketchStackContext = null;
-let sketchStackIsDrawing = false;
-let sketchStackLastX = 0;
-let sketchStackLastY = 0;
+let bowlingMotionEnabled = false;
+let bowlingCalibrated = false;
+let bowlingCurrentPlayerId = "";
+let bowlingListening = false;
+let bowlingBaselineZ = 0;
+let bowlingBaselineX = 0;
+let bowlingBaselineY = 0;
+let bowlingPeakForward = 0;
+let bowlingPeakSide = 0;
+let bowlingPeakSpin = 0;
+let bowlingLastMotionTime = 0;
+
+// DRAWING VARIABLES
+let drawingCanvas = null;
+let drawingContext = null;
+let isDrawing = false;
 
 function showScreen(screenId) {
-  const screens = [
-    "joinScreen",
-    "waitingScreen",
-    "voteScreen",
-    "copycatScreen",
-    "hotSeatScreen",
-    "passwordPanicScreen",
-    "sketchStackPromptScreen",
-    "sketchStackDrawingScreen",
-    "sketchStackVotingScreen",
-    "sketchStackGameOverScreen",
-    "doneScreen",
-  ];
+  document.getElementById("joinScreen").classList.add("hidden");
+  document.getElementById("waitingScreen").classList.add("hidden");
+  document.getElementById("voteScreen").classList.add("hidden");
+  document.getElementById("copycatScreen").classList.add("hidden");
+  document.getElementById("hotSeatScreen").classList.add("hidden");
+  document.getElementById("passwordPanicScreen").classList.add("hidden");
+  document.getElementById("drawingScreen").classList.add("hidden");
+  document.getElementById("bowlingScreen").classList.add("hidden");
+  document.getElementById("doneScreen").classList.add("hidden");
 
-  screens.forEach((id) => {
-    const screen = document.getElementById(id);
-
-    if (screen != null) {
-      screen.classList.add("hidden");
-    }
-  });
-
-  const selectedScreen = document.getElementById(screenId);
-
-  if (selectedScreen != null) {
-    selectedScreen.classList.remove("hidden");
-  } else {
-    console.error("Screen not found:", screenId);
-  }
+  document.getElementById(screenId).classList.remove("hidden");
 }
 
 function setDoneScreen(title, message) {
-  const doneTitle = document.getElementById("doneTitle");
-  const doneMessage = document.getElementById("doneMessage");
-
-  if (doneTitle != null) {
-    doneTitle.innerText = title;
-  }
-
-  if (doneMessage != null) {
-    doneMessage.innerText = message;
-  }
+  document.getElementById("doneTitle").innerText = title;
+  document.getElementById("doneMessage").innerText = message;
 }
 
 function setJoinButtonState(canClick) {
@@ -198,194 +183,245 @@ function submitPasswordPanic() {
   document.getElementById("passwordPanicMessage").innerText = "Wait for the game to start.";
 }
 
-/* ---------------- SKETCH STACK FUNCTIONS ---------------- */
+// DRAWING CODE
 
-function submitSketchStackPrompt() {
-  const promptInput = document.getElementById("sketchStackPromptInput");
-  const promptMessage = document.getElementById("sketchStackPromptMessage");
+function setupDrawingCanvas() {
+  drawingCanvas = document.getElementById("drawingCanvas");
 
-  if (promptInput == null) {
-    console.error("sketchStackPromptInput not found");
+  if (drawingCanvas == null) {
     return;
   }
 
-  const prompt = promptInput.value.trim();
+  drawingContext = drawingCanvas.getContext("2d");
 
-  if (prompt === "") {
-    if (promptMessage != null) {
-      promptMessage.innerText = "Type a prompt first.";
-    }
-    return;
-  }
+  drawingContext.fillStyle = "white";
+  drawingContext.fillRect(0, 0, drawingCanvas.width, drawingCanvas.height);
 
-  socket.emit("player:submitSketchStackPrompt", {
-    roomCode: currentRoomCode,
-    prompt: prompt,
-  });
+  drawingContext.lineWidth = 5;
+  drawingContext.lineCap = "round";
+  drawingContext.lineJoin = "round";
+  drawingContext.strokeStyle = "black";
 
-  setDoneScreen("Prompt sent!", "Waiting for everyone else...");
-  showScreen("doneScreen");
-}
+  drawingCanvas.addEventListener("mousedown", startDrawing);
+  drawingCanvas.addEventListener("mousemove", draw);
+  drawingCanvas.addEventListener("mouseup", stopDrawing);
+  drawingCanvas.addEventListener("mouseleave", stopDrawing);
 
-function setupSketchStackCanvas() {
-  sketchStackCanvas = document.getElementById("sketchStackCanvas");
-
-  if (sketchStackCanvas == null) {
-    console.error("sketchStackCanvas not found");
-    return;
-  }
-
-  sketchStackContext = sketchStackCanvas.getContext("2d");
-
-  clearSketchStackDrawing();
-
-  sketchStackContext.lineWidth = 5;
-  sketchStackContext.lineCap = "round";
-  sketchStackContext.lineJoin = "round";
-  sketchStackContext.strokeStyle = "black";
-
-  sketchStackCanvas.onmousedown = startSketchStackDrawing;
-  sketchStackCanvas.onmousemove = drawSketchStackLine;
-  sketchStackCanvas.onmouseup = stopSketchStackDrawing;
-  sketchStackCanvas.onmouseleave = stopSketchStackDrawing;
-
-  sketchStackCanvas.ontouchstart = startSketchStackTouchDrawing;
-  sketchStackCanvas.ontouchmove = drawSketchStackTouchLine;
-  sketchStackCanvas.ontouchend = stopSketchStackDrawing;
-  sketchStackCanvas.ontouchcancel = stopSketchStackDrawing;
+  drawingCanvas.addEventListener("touchstart", startDrawing);
+  drawingCanvas.addEventListener("touchmove", draw);
+  drawingCanvas.addEventListener("touchend", stopDrawing);
+  drawingCanvas.addEventListener("touchcancel", stopDrawing);
 }
 
 function getCanvasPosition(event) {
-  const rect = sketchStackCanvas.getBoundingClientRect();
+  const rect = drawingCanvas.getBoundingClientRect();
 
-  const scaleX = sketchStackCanvas.width / rect.width;
-  const scaleY = sketchStackCanvas.height / rect.height;
+  let clientX;
+  let clientY;
+
+  if (event.touches && event.touches.length > 0) {
+    clientX = event.touches[0].clientX;
+    clientY = event.touches[0].clientY;
+  } else {
+    clientX = event.clientX;
+    clientY = event.clientY;
+  }
+
+  const scaleX = drawingCanvas.width / rect.width;
+  const scaleY = drawingCanvas.height / rect.height;
 
   return {
-    x: (event.clientX - rect.left) * scaleX,
-    y: (event.clientY - rect.top) * scaleY,
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY,
   };
 }
 
-function startSketchStackDrawing(event) {
-  if (sketchStackCanvas == null || sketchStackContext == null) {
+function startDrawing(event) {
+  event.preventDefault();
+
+  if (drawingCanvas == null || drawingContext == null) {
     return;
   }
 
-  sketchStackIsDrawing = true;
-
-  const position = getCanvasPosition(event);
-  sketchStackLastX = position.x;
-  sketchStackLastY = position.y;
-}
-
-function drawSketchStackLine(event) {
-  if (!sketchStackIsDrawing || sketchStackContext == null) {
-    return;
-  }
+  isDrawing = true;
 
   const position = getCanvasPosition(event);
 
-  sketchStackContext.beginPath();
-  sketchStackContext.moveTo(sketchStackLastX, sketchStackLastY);
-  sketchStackContext.lineTo(position.x, position.y);
-  sketchStackContext.stroke();
-
-  sketchStackLastX = position.x;
-  sketchStackLastY = position.y;
+  drawingContext.beginPath();
+  drawingContext.moveTo(position.x, position.y);
 }
 
-function startSketchStackTouchDrawing(event) {
+function draw(event) {
   event.preventDefault();
 
-  if (event.touches.length <= 0) {
+  if (!isDrawing) {
     return;
   }
 
-  startSketchStackDrawing(event.touches[0]);
-}
-
-function drawSketchStackTouchLine(event) {
-  event.preventDefault();
-
-  if (event.touches.length <= 0) {
+  if (drawingCanvas == null || drawingContext == null) {
     return;
   }
 
-  drawSketchStackLine(event.touches[0]);
+  const position = getCanvasPosition(event);
+
+  drawingContext.lineTo(position.x, position.y);
+  drawingContext.stroke();
 }
 
-function stopSketchStackDrawing() {
-  sketchStackIsDrawing = false;
-}
-
-function clearSketchStackDrawing() {
-  if (sketchStackCanvas == null) {
-    sketchStackCanvas = document.getElementById("sketchStackCanvas");
+function stopDrawing(event) {
+  if (event) {
+    event.preventDefault();
   }
 
-  if (sketchStackCanvas == null) {
+  isDrawing = false;
+}
+
+function clearDrawing() {
+  if (drawingCanvas == null || drawingContext == null) {
     return;
   }
 
-  if (sketchStackContext == null) {
-    sketchStackContext = sketchStackCanvas.getContext("2d");
-  }
+  drawingContext.fillStyle = "white";
+  drawingContext.fillRect(0, 0, drawingCanvas.width, drawingCanvas.height);
 
-  sketchStackContext.fillStyle = "white";
-  sketchStackContext.fillRect(0, 0, sketchStackCanvas.width, sketchStackCanvas.height);
+  drawingContext.lineWidth = 5;
+  drawingContext.lineCap = "round";
+  drawingContext.lineJoin = "round";
+  drawingContext.strokeStyle = "black";
+
+  document.getElementById("drawingMessage").innerText = "";
 }
 
-function submitSketchStackDrawing() {
-  if (sketchStackCanvas == null) {
-    sketchStackCanvas = document.getElementById("sketchStackCanvas");
-  }
-
-  if (sketchStackCanvas == null) {
-    const message = document.getElementById("sketchStackDrawingMessage");
-
-    if (message != null) {
-      message.innerText = "Drawing area not found.";
-    }
-
+function submitDrawing() {
+  if (drawingCanvas == null) {
+    document.getElementById("drawingMessage").innerText = "Drawing canvas not ready.";
     return;
   }
 
-  const drawingDataUrl = sketchStackCanvas.toDataURL("image/png");
+  const drawingDataUrl = drawingCanvas.toDataURL("image/png");
 
   socket.emit("player:submitDrawing", {
     roomCode: currentRoomCode,
     drawingDataUrl: drawingDataUrl,
   });
 
-  setDoneScreen("Drawing sent!", "Waiting for everyone else...");
+  setDoneScreen("Drawing locked in!", "Waiting for everyone else...");
   showScreen("doneScreen");
 }
 
-function voteSketchStackDrawing(playerId) {
-  socket.emit("player:submitSketchStackVote", {
+function resetBowlingMotion() {
+  bowlingPeakForward = 0;
+  bowlingPeakSide = 0;
+  bowlingPeakSpin = 0;
+  bowlingLastMotionTime = 0;
+}
+
+function handleBowlingMotion(event) {
+  if (!bowlingListening || !bowlingMotionEnabled || !bowlingCalibrated) return;
+
+  const acceleration = event.accelerationIncludingGravity || event.acceleration;
+  const rotation = event.rotationRate;
+  if (!acceleration) return;
+
+  const z = Number(acceleration.z) || 0;
+  const x = Number(acceleration.x) || 0;
+  const y = Number(acceleration.y) || 0;
+
+  const forward = Math.max(0, Math.min(1, Math.abs(z - bowlingBaselineZ) / 18));
+  const side = Math.max(-1, Math.min(1, (x - bowlingBaselineX) / 12));
+  const spin = rotation ? Math.max(-1, Math.min(1, (Number(rotation.gamma) || 0) / 180)) : 0;
+
+  bowlingPeakForward = Math.max(bowlingPeakForward, forward);
+  if (Math.abs(side) > Math.abs(bowlingPeakSide)) bowlingPeakSide = side;
+  if (Math.abs(spin) > Math.abs(bowlingPeakSpin)) bowlingPeakSpin = spin;
+  bowlingLastMotionTime = Date.now();
+}
+
+async function enableBowlingMotion() {
+  const message = document.getElementById("bowlingMessage");
+
+  try {
+    if (typeof DeviceMotionEvent === "undefined") {
+      message.innerText = "This phone does not provide motion controls.";
+      return;
+    }
+
+    if (typeof DeviceMotionEvent.requestPermission === "function") {
+      const permission = await DeviceMotionEvent.requestPermission();
+      if (permission !== "granted") {
+        message.innerText = "Motion permission was denied.";
+        return;
+      }
+    }
+
+    window.addEventListener("devicemotion", handleBowlingMotion, true);
+    bowlingListening = true;
+    bowlingMotionEnabled = true;
+    message.innerText = "Motion controls enabled. Hold your phone still and press CALIBRATE.";
+    document.getElementById("bowlingMotionButton").style.display = "none";
+    document.getElementById("bowlingCalibrateButton").style.display = "block";
+  } catch (error) {
+    console.error(error);
+    message.innerText = "Could not enable motion controls.";
+  }
+}
+
+function calibrateBowlingPhone() {
+  const acceleration = window.__lastBowlingAcceleration;
+  if (acceleration) {
+    bowlingBaselineX = acceleration.x || 0;
+    bowlingBaselineY = acceleration.y || 0;
+    bowlingBaselineZ = acceleration.z || 0;
+  }
+
+  bowlingCalibrated = true;
+  resetBowlingMotion();
+  document.getElementById("bowlingCalibrateButton").style.display = "none";
+  document.getElementById("bowlingReadyButton").style.display = "block";
+  document.getElementById("bowlingMessage").innerText = "Calibrated. Press READY when you are holding the phone comfortably.";
+}
+
+function submitBowlingReady() {
+  socket.emit("player:bowlingReady", { roomCode: currentRoomCode });
+  document.getElementById("bowlingReadyButton").disabled = true;
+  document.getElementById("bowlingMessage").innerText = "Ready! Wait for your turn.";
+}
+
+function submitBowlingThrow() {
+  if (!bowlingCalibrated || bowlingCurrentPlayerId !== myPlayerId) return;
+
+  const power = Math.max(0.25, Math.min(1, bowlingPeakForward));
+  const side = bowlingPeakSide;
+  const spin = bowlingPeakSpin;
+
+  socket.emit("player:bowlingThrow", {
     roomCode: currentRoomCode,
-    votedPlayerId: playerId,
+    forward: power,
+    side: side,
+    spin: spin,
+    power: power,
   });
 
-  setDoneScreen("Vote locked in!", "Waiting for everyone else...");
-  showScreen("doneScreen");
+  document.getElementById("bowlingThrowButton").disabled = true;
+  document.getElementById("bowlingMessage").innerText = "THROW SENT! Watch the lane.";
+  resetBowlingMotion();
 }
 
-/* ---------------- SOCKET EVENTS ---------------- */
+window.addEventListener("devicemotion", (event) => {
+  const acceleration = event.accelerationIncludingGravity || event.acceleration;
+  if (acceleration) window.__lastBowlingAcceleration = acceleration;
+}, true);
+
+window.addEventListener("load", () => {
+  setupDrawingCanvas();
+});
 
 socket.on("player:joinSuccess", (data) => {
   myPlayerId = data.player.id;
   currentRoomCode = data.roomCode;
   isJoining = false;
   setJoinButtonState(true);
-
-  const joinMessage = document.getElementById("joinMessage");
-
-  if (joinMessage != null) {
-    joinMessage.innerText = "";
-  }
-
+  document.getElementById("joinMessage").innerText = "";
   showScreen("waitingScreen");
 });
 
@@ -395,12 +431,10 @@ socket.on("player:joinFailed", (message) => {
 
   const joinMessage = document.getElementById("joinMessage");
 
-  if (joinMessage != null) {
-    if (message.includes("Room is full")) {
-      joinMessage.innerText = "The room is full";
-    } else {
-      joinMessage.innerText = message;
-    }
+  if (message.includes("Room is full")) {
+    joinMessage.innerText = "The room is full";
+  } else {
+    joinMessage.innerText = message;
   }
 
   showScreen("joinScreen");
@@ -668,125 +702,47 @@ socket.on("game:passwordPanicFinished", () => {
   showScreen("doneScreen");
 });
 
-/* ---------------- SKETCH STACK EVENTS ---------------- */
-
-socket.on("game:sketchStackPromptPhaseStarted", () => {
-  const promptInput = document.getElementById("sketchStackPromptInput");
-  const promptMessage = document.getElementById("sketchStackPromptMessage");
-
-  if (promptInput != null) {
-    promptInput.value = "";
-  }
-
-  if (promptMessage != null) {
-    promptMessage.innerText = "";
-  }
-
-  showScreen("sketchStackPromptScreen");
-});
-
-socket.on("player:sketchStackPromptAccepted", () => {
-  setDoneScreen("Prompt sent!", "Waiting for the round to start...");
-  showScreen("doneScreen");
-});
-
-socket.on("player:sketchStackPromptRejected", (message) => {
-  alert(message);
-  showScreen("sketchStackPromptScreen");
-});
-
+// DRAWING ROUND STARTED
 socket.on("game:drawingStarted", (data) => {
-  showSketchStackDrawingScreen(data);
+  showScreen("drawingScreen");
+
+  const promptText = document.getElementById("drawingPromptText");
+  const messageText = document.getElementById("drawingMessage");
+  const submitButton = document.getElementById("submitDrawingButton");
+
+  promptText.innerText =
+    "SKETCH STACK\n\n" +
+    "Draw this:\n" +
+    data.prompt;
+
+  messageText.innerText = "";
+  submitButton.disabled = false;
+
+  clearDrawing();
 });
 
+// This is here in case we name the server event Sketch Stack later.
 socket.on("game:sketchStackStarted", (data) => {
-  showSketchStackDrawingScreen(data);
+  showScreen("drawingScreen");
+
+  const promptText = document.getElementById("drawingPromptText");
+  const messageText = document.getElementById("drawingMessage");
+  const submitButton = document.getElementById("submitDrawingButton");
+
+  promptText.innerText =
+    "SKETCH STACK\n\n" +
+    "Draw this:\n" +
+    data.prompt;
+
+  messageText.innerText = "";
+  submitButton.disabled = false;
+
+  clearDrawing();
 });
-
-function showSketchStackDrawingScreen(data) {
-  showScreen("sketchStackDrawingScreen");
-
-  const promptText = document.getElementById("sketchStackDrawingPromptText");
-  const messageText = document.getElementById("sketchStackDrawingMessage");
-
-  if (promptText != null) {
-    promptText.innerText =
-      "SKETCH STACK\n\n" +
-      "Round " +
-      data.roundNumber +
-      "/" +
-      data.maxRounds +
-      "\n\nDraw this:\n" +
-      data.prompt;
-  }
-
-  if (messageText != null) {
-    messageText.innerText = "";
-  }
-
-  setupSketchStackCanvas();
-  clearSketchStackDrawing();
-}
 
 socket.on("player:drawingRejected", (message) => {
   alert(message);
-  showScreen("sketchStackDrawingScreen");
-});
-
-socket.on("game:sketchStackVotingStarted", (data) => {
-  showScreen("sketchStackVotingScreen");
-
-  const votingTitle = document.getElementById("sketchStackVotingTitle");
-  const drawingsList = document.getElementById("sketchStackVotingList");
-
-  if (votingTitle != null) {
-    votingTitle.innerText =
-      "Pick the best drawing\nRound " +
-      data.roundNumber +
-      "/" +
-      data.maxRounds;
-  }
-
-  if (drawingsList != null) {
-    drawingsList.innerHTML = "";
-
-    if (!data.drawings || data.drawings.length === 0) {
-      drawingsList.innerHTML = "<p>No drawings to vote for.</p>";
-      return;
-    }
-
-    data.drawings.forEach((drawing) => {
-      const card = document.createElement("div");
-      card.className = "drawingVoteCard";
-
-      const image = document.createElement("img");
-      image.src = drawing.drawingDataUrl;
-      image.className = "drawingVoteImage";
-
-      const button = document.createElement("button");
-      button.className = "playerButton";
-      button.innerText = "Vote for this drawing";
-
-      button.onclick = () => {
-        voteSketchStackDrawing(drawing.playerId);
-      };
-
-      card.appendChild(image);
-      card.appendChild(button);
-
-      drawingsList.appendChild(card);
-    });
-  }
-});
-
-socket.on("player:sketchStackVoteAccepted", () => {
-  setDoneScreen("Vote locked in!", "Waiting for everyone else...");
-  showScreen("doneScreen");
-});
-
-socket.on("player:sketchStackVoteRejected", (message) => {
-  alert(message);
-  showScreen("sketchStackVotingScreen");
+  showScreen("drawingScreen");
 });
 
 socket.on("game:drawingFinished", () => {
@@ -799,36 +755,56 @@ socket.on("game:sketchStackFinished", () => {
   showScreen("doneScreen");
 });
 
-socket.on("game:sketchStackGameOver", (data) => {
-  showScreen("sketchStackGameOverScreen");
+socket.on("game:bowlingStarted", (data) => {
+  showScreen("bowlingScreen");
+  bowlingCurrentPlayerId = "";
+  bowlingCalibrated = false;
+  bowlingMotionEnabled = false;
+  resetBowlingMotion();
 
-  const leaderboardList = document.getElementById("sketchStackLeaderboardList");
-
-  if (leaderboardList != null) {
-    leaderboardList.innerHTML = "";
-
-    if (!data.leaderboard || data.leaderboard.length === 0) {
-      leaderboardList.innerHTML = "<p>No scores yet.</p>";
-      return;
-    }
-
-    data.leaderboard.forEach((entry) => {
-      const row = document.createElement("div");
-      row.className = "leaderboardRow";
-      row.innerText =
-        entry.place +
-        ". " +
-        entry.playerName +
-        " - " +
-        entry.score +
-        " pts";
-
-      leaderboardList.appendChild(row);
-    });
-  }
+  document.getElementById("bowlingTitleText").innerText = "BOWLING";
+  document.getElementById("bowlingTurnText").innerText = "Getting ready...";
+  document.getElementById("bowlingMessage").innerText = "First enable motion controls.";
+  document.getElementById("bowlingMotionButton").style.display = "block";
+  document.getElementById("bowlingCalibrateButton").style.display = "none";
+  document.getElementById("bowlingReadyButton").style.display = "none";
+  document.getElementById("bowlingThrowButton").style.display = "block";
+  document.getElementById("bowlingThrowButton").disabled = true;
 });
 
-/* ---------------- OTHER EVENTS ---------------- */
+socket.on("game:bowlingTurn", (data) => {
+  showScreen("bowlingScreen");
+  bowlingCurrentPlayerId = data.currentPlayerId || "";
+
+  const isMyTurn = bowlingCurrentPlayerId === myPlayerId;
+  document.getElementById("bowlingTurnText").innerText = isMyTurn
+    ? "YOUR TURN — HOLD YOUR PHONE LIKE A WII REMOTE"
+    : data.currentPlayerName + " is bowling.";
+
+  document.getElementById("bowlingThrowButton").disabled = !isMyTurn || !bowlingCalibrated;
+  document.getElementById("bowlingReadyButton").disabled = false;
+  document.getElementById("bowlingMessage").innerText = isMyTurn
+    ? "Swing forward, then tap THROW."
+    : "Watch the main screen.";
+
+  resetBowlingMotion();
+});
+
+socket.on("game:bowlingReadyAccepted", () => {
+  document.getElementById("bowlingMessage").innerText = "Ready!";
+});
+
+socket.on("game:bowlingThrowAccepted", (data) => {
+  document.getElementById("bowlingThrowButton").disabled = true;
+  document.getElementById("bowlingMessage").innerText = data.playerId === myPlayerId
+    ? "Nice throw!"
+    : data.playerName + " threw the ball!";
+});
+
+socket.on("game:bowlingThrowRejected", (message) => {
+  alert(message);
+  document.getElementById("bowlingThrowButton").disabled = false;
+});
 
 socket.on("game:returnToLobby", () => {
   resetPhoneToJoinScreen("The host returned to the lobby. Please enter the new room code.");
