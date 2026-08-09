@@ -4,52 +4,190 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>Spillstack</title>
   <link rel="stylesheet" href="style.css">
+
   <style>
-    #drawingCanvas { width: 100%; max-width: 500px; aspect-ratio: 1 / 1; background: white; border-radius: 16px; touch-action: none; }
-    #bowlingScreen { max-width: 520px; }
-    .bowlingButton { display:block; width:90%; max-width:380px; margin:12px auto; }
-    #bowlingThrowButton { background:#f59e0b; font-size:24px; }
+    #drawingCanvas {
+      width: 100%;
+      max-width: 500px;
+      aspect-ratio: 1 / 1;
+      background: white;
+      border-radius: 16px;
+      touch-action: none;
+    }
+
+    #bowlingScreen {
+      max-width: 520px;
+    }
+
+    .bowlingButton {
+      display: block;
+      width: 90%;
+      max-width: 380px;
+      margin: 12px auto;
+    }
+
+    #bowlingThrowButton {
+      background: #f59e0b;
+      font-size: 24px;
+
+      /* Important for Wii-style hold + swing controls on phones */
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+
+    #bowlingThrowButton.bowlingHolding {
+      transform: scale(0.97);
+    }
   </style>
 </head>
+
 <body>
+  <!-- JOIN SCREEN -->
   <div id="joinScreen" class="screen">
-    <h1>Spillstack</h1><p>Join the room on your phone.</p>
+    <h1>Spillstack</h1>
+    <p>Join the room on your phone.</p>
+
     <input id="nameInput" placeholder="Your name" maxlength="15">
     <input id="roomInput" placeholder="Room code">
+
     <button id="joinButton" onclick="joinRoom()">Join Game</button>
+
     <p id="joinMessage"></p>
   </div>
 
-  <div id="waitingScreen" class="screen hidden"><h1>You’re in!</h1><p>Waiting for the host to start the round...</p></div>
+  <!-- WAITING SCREEN -->
+  <div id="waitingScreen" class="screen hidden">
+    <h1>You’re in!</h1>
+    <p>Waiting for the host to start the round...</p>
+  </div>
 
-  <div id="voteScreen" class="screen hidden"><h2 id="questionText">Question goes here</h2><div id="playersList"></div></div>
+  <!-- OLD VOTE SCREEN -->
+  <div id="voteScreen" class="screen hidden">
+    <h2 id="questionText">Question goes here</h2>
+    <div id="playersList"></div>
+  </div>
 
-  <div id="copycatScreen" class="screen hidden"><h2 id="copycatPromptText">Copycat prompt goes here</h2><input id="copycatAnswerInput" placeholder="Type your answer"><button onclick="submitCopycatAnswer()">Submit Answer</button><p id="copycatMessage"></p></div>
+  <!-- COPYCAT -->
+  <div id="copycatScreen" class="screen hidden">
+    <h2 id="copycatPromptText">Copycat prompt goes here</h2>
 
-  <div id="hotSeatScreen" class="screen hidden"><h2 id="hotSeatPromptText">Hot Seat prompt goes here</h2><input id="hotSeatAnswerInput" placeholder="Type your answer"><button id="hotSeatSubmitButton" onclick="submitHotSeatAnswer()">Submit Answer</button><div id="hotSeatAnswersList"></div><p id="hotSeatMessage"></p></div>
+    <input id="copycatAnswerInput" placeholder="Type your answer">
 
-  <div id="passwordPanicScreen" class="screen hidden"><h1 id="passwordPanicTitleText">Password Panic</h1><p id="passwordPanicInfoText">Password Panic info goes here</p><input id="passwordPanicInput" placeholder="Type here"><button id="passwordPanicSubmitButton" onclick="submitPasswordPanic()">Submit</button><p id="passwordPanicMessage"></p></div>
+    <button onclick="submitCopycatAnswer()">Submit Answer</button>
 
+    <p id="copycatMessage"></p>
+  </div>
+
+  <!-- HOT SEAT -->
+  <div id="hotSeatScreen" class="screen hidden">
+    <h2 id="hotSeatPromptText">Hot Seat prompt goes here</h2>
+
+    <input id="hotSeatAnswerInput" placeholder="Type your answer">
+
+    <button
+      id="hotSeatSubmitButton"
+      onclick="submitHotSeatAnswer()"
+    >
+      Submit Answer
+    </button>
+
+    <div id="hotSeatAnswersList"></div>
+
+    <p id="hotSeatMessage"></p>
+  </div>
+
+  <!-- PASSWORD PANIC -->
+  <div id="passwordPanicScreen" class="screen hidden">
+    <h1 id="passwordPanicTitleText">Password Panic</h1>
+
+    <p id="passwordPanicInfoText">
+      Password Panic info goes here
+    </p>
+
+    <input id="passwordPanicInput" placeholder="Type here">
+
+    <button
+      id="passwordPanicSubmitButton"
+      onclick="submitPasswordPanic()"
+    >
+      Submit
+    </button>
+
+    <p id="passwordPanicMessage"></p>
+  </div>
+
+  <!-- SKETCH STACK -->
   <div id="drawingScreen" class="screen hidden">
-    <h1>Sketch Stack</h1><h2 id="drawingPromptText">Draw this:</h2>
-    <canvas id="drawingCanvas" width="1024" height="1024"></canvas>
+    <h1>Sketch Stack</h1>
+
+    <h2 id="drawingPromptText">Draw this:</h2>
+
+    <canvas
+      id="drawingCanvas"
+      width="1024"
+      height="1024"
+    ></canvas>
+
     <button onclick="clearDrawing()">Clear</button>
-    <button id="submitDrawingButton" onclick="submitDrawing()">Submit Drawing</button>
+
+    <button
+      id="submitDrawingButton"
+      onclick="submitDrawing()"
+    >
+      Submit Drawing
+    </button>
+
     <p id="drawingMessage"></p>
   </div>
 
+  <!-- BOWLING -->
   <div id="bowlingScreen" class="screen hidden">
     <h1 id="bowlingTitleText">BOWLING</h1>
+
     <h2 id="bowlingTurnText">Getting ready...</h2>
+
     <p>Use your phone like a Wii Remote.</p>
-    <button id="bowlingMotionButton" class="bowlingButton" onclick="enableBowlingMotion()">ENABLE MOTION CONTROLS</button>
-    <button id="bowlingCalibrateButton" class="bowlingButton" onclick="calibrateBowlingPhone()" style="display:none">CALIBRATE PHONE</button>
-    <button id="bowlingReadyButton" class="bowlingButton" onclick="submitBowlingReady()" style="display:none">READY</button>
-    <button id="bowlingThrowButton" class="bowlingButton" onclick="submitBowlingThrow()" disabled>THROW!</button>
+
+    <button
+      id="bowlingMotionButton"
+      class="bowlingButton"
+      onclick="enableBowlingMotion()"
+    >
+      ENABLE MOTION CONTROLS
+    </button>
+
+    <button
+      id="bowlingCalibrateButton"
+      class="bowlingButton"
+      onclick="calibrateBowlingPhone()"
+      style="display:none"
+    >
+      CALIBRATE PHONE
+    </button>
+
+    <!--
+      No onclick here.
+      script.js handles press-and-hold + release so it behaves
+      like the Wii Bowling trigger.
+    -->
+    <button
+      id="bowlingThrowButton"
+      class="bowlingButton"
+      disabled
+    >
+      HOLD TO BOWL
+    </button>
+
     <p id="bowlingMessage">Waiting...</p>
   </div>
 
-  <div id="doneScreen" class="screen hidden"><h1 id="doneTitle">Locked in!</h1><p id="doneMessage">Waiting for everyone else...</p></div>
+  <!-- DONE -->
+  <div id="doneScreen" class="screen hidden">
+    <h1 id="doneTitle">Locked in!</h1>
+    <p id="doneMessage">Waiting for everyone else...</p>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="script.js"></script>
