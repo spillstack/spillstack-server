@@ -86,6 +86,11 @@ function makeNewRoomObject() {
     sketchStackVotingStarted: false,
     sketchStackRoundFinished: false,
     sketchStackPromptPhaseStarted: false,
+
+    bowlingActive: false,
+    bowlingTurnIndex: 0,
+    bowlingCurrentPlayerId: null,
+    bowlingThrown: false,
   };
 }
 
@@ -888,6 +893,43 @@ function sendSketchStackGameOver(roomCode) {
   console.log("Sketch Stack game over:", leaderboardText);
 }
 
+function sendBowlingTurn(roomCode) {
+  const room = rooms[roomCode];
+  if (!room || !room.bowlingActive) return;
+
+  if (room.players.length === 0) {
+    room.bowlingActive = false;
+    return;
+  }
+
+  room.bowlingTurnIndex = room.bowlingTurnIndex % room.players.length;
+  const player = room.players[room.bowlingTurnIndex];
+  room.bowlingCurrentPlayerId = player.id;
+  room.bowlingThrown = false;
+
+  io.to(roomCode).emit("game:bowlingTurn", {
+    currentPlayerId: player.id,
+    currentPlayerName: player.name,
+    turnIndex: room.bowlingTurnIndex,
+    totalPlayers: room.players.length,
+  });
+
+  sendToUnity(roomCode, {
+    type: "bowlingTurn",
+    currentPlayerId: player.id,
+    currentPlayerName: player.name,
+    turnIndex: room.bowlingTurnIndex,
+    totalPlayers: room.players.length,
+  });
+}
+
+function resetBowling(room) {
+  room.bowlingActive = false;
+  room.bowlingTurnIndex = 0;
+  room.bowlingCurrentPlayerId = null;
+  room.bowlingThrown = false;
+}
+
 function resetSketchStack(room) {
   room.currentDrawingPrompt = null;
   room.drawings = {};
@@ -1172,6 +1214,57 @@ wss.on("connection", (ws) => {
       }
     }
 
+    if (message.type === "startBowling") {
+      const room = rooms[message.roomCode];
+
+      if (!room) return;
+
+      if (room.players.length < 1) {
+        sendToUnity(message.roomCode, {
+          type: "bowlingError",
+          message: "Need at least 1 player for Bowling."
+        });
+        return;
+      }
+
+      if (message.resetScores === true) {
+        resetScores(room);
+      }
+
+      room.bowlingActive = true;
+      room.bowlingTurnIndex = 0;
+      room.bowlingCurrentPlayerId = null;
+      room.bowlingThrown = false;
+
+      io.to(message.roomCode).emit("game:bowlingStarted", {
+        players: room.players,
+        totalPlayers: room.players.length,
+      });
+
+      sendToUnity(message.roomCode, {
+        type: "bowlingStarted",
+        players: room.players,
+        totalPlayers: room.players.length,
+      });
+
+      sendBowlingTurn(message.roomCode);
+      console.log("Bowling started in room:", message.roomCode);
+    }
+
+    if (message.type === "bowlingNextTurn") {
+      const room = rooms[message.roomCode];
+      if (!room || !room.bowlingActive) return;
+      if (!room.bowlingThrown) return;
+
+      room.bowlingTurnIndex++;
+
+      if (room.bowlingTurnIndex >= room.players.length) {
+        room.bowlingTurnIndex = 0;
+      }
+
+      sendBowlingTurn(message.roomCode);
+    }
+
     if (message.type === "returnToLobby") {
       closeRoomAndCreateNewRoom(
         ws,
@@ -1208,6 +1301,7 @@ wss.on("connection", (ws) => {
       room.passwordPanicRoundFinished = false;
 
       resetSketchStack(room);
+      resetBowling(room);
       resetScores(room);
 
       sendToUnity(message.roomCode, {
@@ -1547,6 +1641,67 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("player:bowlingReady", ({ roomCode }) => {
+    const room = rooms[roomCode];
+    if (!room || !room.bowlingActive) return;
+
+    const player = getPlayer(room, socket.id);
+    if (!player) return;
+
+    sendToUnity(roomCode, {
+      type: "bowlingPlayerReady",
+      playerId: socket.id,
+      playerName: player.name,
+    });
+
+    socket.emit("game:bowlingReadyAccepted");
+  });
+
+  socket.on("player:bowlingThrow", ({ roomCode, forward, side, spin, power }) => {
+    const room = rooms[roomCode];
+    if (!room || !room.bowlingActive) return;
+
+    const player = getPlayer(room, socket.id);
+    if (!player) {
+      socket.emit("game:bowlingThrowRejected", "You are not in this room.");
+      return;
+    }
+
+    if (socket.id !== room.bowlingCurrentPlayerId) {
+      socket.emit("game:bowlingThrowRejected", "It is not your turn.");
+      return;
+    }
+
+    if (room.bowlingThrown) {
+      socket.emit("game:bowlingThrowRejected", "You already threw this turn.");
+      return;
+    }
+
+    const safeForward = Math.max(0, Math.min(1, Number(forward) || 0));
+    const safeSide = Math.max(-1, Math.min(1, Number(side) || 0));
+    const safeSpin = Math.max(-1, Math.min(1, Number(spin) || 0));
+    const safePower = Math.max(0, Math.min(1, Number(power) || 0));
+
+    room.bowlingThrown = true;
+
+    sendToUnity(roomCode, {
+      type: "bowlingThrow",
+      playerId: player.id,
+      playerName: player.name,
+      forward: safeForward,
+      side: safeSide,
+      spin: safeSpin,
+      power: safePower,
+    });
+
+    io.to(roomCode).emit("game:bowlingThrowAccepted", {
+      playerId: player.id,
+      playerName: player.name,
+    });
+
+    console.log("Bowling throw:", player.name, safeForward, safeSide, safeSpin, safePower);
+  });
+
   socket.on("player:submitSketchStackPrompt", ({ roomCode, prompt }) => {
     const room = rooms[roomCode];
 
@@ -1779,6 +1934,10 @@ io.on("connection", (socket) => {
 
       if (room.sketchStackVotes) {
         delete room.sketchStackVotes[socket.id];
+      }
+
+      if (room.bowlingCurrentPlayerId === socket.id) {
+        room.bowlingCurrentPlayerId = null;
       }
 
       if (room.sketchStackPlayerPrompts) {
