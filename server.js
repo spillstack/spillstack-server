@@ -25,6 +25,7 @@ const unityHosts = {};
 const MAX_PLAYERS_PER_ROOM = 5;
 const MAX_DRAWING_DATA_LENGTH = 1500000;
 const MAX_SKETCH_STACK_ROUNDS = 5;
+const BOWLING_MOTION_MIN_INTERVAL_MS = 25;
 
 const sketchStackFallbackPrompts = [
   "Draw a dog driving a car.",
@@ -91,6 +92,9 @@ function makeNewRoomObject() {
     bowlingTurnIndex: 0,
     bowlingCurrentPlayerId: null,
     bowlingThrown: false,
+    bowlingHoldingPlayerId: null,
+    bowlingLastMotionAt: 0,
+    bowlingLastMotionSequence: -1,
   };
 }
 
@@ -149,6 +153,14 @@ function getPlayer(room, playerId) {
 function getPlayerName(room, playerId) {
   const player = getPlayer(room, playerId);
   return player ? player.name : "Unknown Player";
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+function clampSigned(value) {
+  return Math.max(-1, Math.min(1, Number(value) || 0));
 }
 
 function resetScores(room) {
@@ -906,6 +918,9 @@ function sendBowlingTurn(roomCode) {
   const player = room.players[room.bowlingTurnIndex];
   room.bowlingCurrentPlayerId = player.id;
   room.bowlingThrown = false;
+  room.bowlingHoldingPlayerId = null;
+  room.bowlingLastMotionAt = 0;
+  room.bowlingLastMotionSequence = -1;
 
   io.to(roomCode).emit("game:bowlingTurn", {
     currentPlayerId: player.id,
@@ -928,6 +943,9 @@ function resetBowling(room) {
   room.bowlingTurnIndex = 0;
   room.bowlingCurrentPlayerId = null;
   room.bowlingThrown = false;
+  room.bowlingHoldingPlayerId = null;
+  room.bowlingLastMotionAt = 0;
+  room.bowlingLastMotionSequence = -1;
 }
 
 function resetSketchStack(room) {
@@ -1235,6 +1253,9 @@ wss.on("connection", (ws) => {
       room.bowlingTurnIndex = 0;
       room.bowlingCurrentPlayerId = null;
       room.bowlingThrown = false;
+      room.bowlingHoldingPlayerId = null;
+      room.bowlingLastMotionAt = 0;
+      room.bowlingLastMotionSequence = -1;
 
       io.to(message.roomCode).emit("game:bowlingStarted", {
         players: room.players,
@@ -1388,6 +1409,27 @@ io.on("connection", (socket) => {
       type: "playersUpdated",
       players: room.players,
     });
+
+    // If somebody reconnects or joins after Bowling has already started, put
+    // that phone on the Bowling screen immediately instead of leaving it stuck
+    // on the generic waiting screen.
+    if (room.bowlingActive) {
+      socket.emit("game:bowlingStarted", {
+        players: room.players,
+        totalPlayers: room.players.length,
+      });
+
+      const currentBowler = getPlayer(room, room.bowlingCurrentPlayerId);
+
+      if (currentBowler) {
+        socket.emit("game:bowlingTurn", {
+          currentPlayerId: currentBowler.id,
+          currentPlayerName: currentBowler.name,
+          turnIndex: room.bowlingTurnIndex,
+          totalPlayers: room.players.length,
+        });
+      }
+    }
 
     console.log(playerName + " joined room " + roomCode);
   });
@@ -1641,6 +1683,8 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Backward-compatible ready message. The new controller no longer requires a
+  // separate READY button, but keeping this means older cached phone pages still work.
   socket.on("player:bowlingReady", ({ roomCode }) => {
     const room = rooms[roomCode];
     if (!room || !room.bowlingActive) return;
@@ -1657,50 +1701,170 @@ io.on("connection", (socket) => {
     socket.emit("game:bowlingReadyAccepted");
   });
 
-  socket.on("player:bowlingThrow", ({ roomCode, forward, side, spin, power }) => {
+  socket.on("player:bowlingMotionStart", ({ roomCode, clientTime }) => {
     const room = rooms[roomCode];
-    if (!room || !room.bowlingActive) return;
+
+    if (!room || !room.bowlingActive) {
+      socket.emit("game:bowlingMotionRejected", "No Bowling game is active.");
+      return;
+    }
 
     const player = getPlayer(room, socket.id);
+
     if (!player) {
-      socket.emit("game:bowlingThrowRejected", "You are not in this room.");
+      socket.emit("game:bowlingMotionRejected", "You are not in this room.");
       return;
     }
 
     if (socket.id !== room.bowlingCurrentPlayerId) {
-      socket.emit("game:bowlingThrowRejected", "It is not your turn.");
+      socket.emit("game:bowlingMotionRejected", "It is not your turn.");
       return;
     }
 
     if (room.bowlingThrown) {
-      socket.emit("game:bowlingThrowRejected", "You already threw this turn.");
+      socket.emit("game:bowlingMotionRejected", "You already threw this turn.");
       return;
     }
 
-    const safeForward = Math.max(0, Math.min(1, Number(forward) || 0));
-    const safeSide = Math.max(-1, Math.min(1, Number(side) || 0));
-    const safeSpin = Math.max(-1, Math.min(1, Number(spin) || 0));
-    const safePower = Math.max(0, Math.min(1, Number(power) || 0));
-
-    room.bowlingThrown = true;
+    room.bowlingHoldingPlayerId = socket.id;
+    room.bowlingLastMotionAt = 0;
+    room.bowlingLastMotionSequence = -1;
 
     sendToUnity(roomCode, {
-      type: "bowlingThrow",
+      type: "bowlingMotionStart",
       playerId: player.id,
       playerName: player.name,
-      forward: safeForward,
-      side: safeSide,
-      spin: safeSpin,
-      power: safePower,
+      clientTime: Number(clientTime) || 0,
     });
 
-    io.to(roomCode).emit("game:bowlingThrowAccepted", {
-      playerId: player.id,
-      playerName: player.name,
-    });
-
-    console.log("Bowling throw:", player.name, safeForward, safeSide, safeSpin, safePower);
+    socket.emit("game:bowlingMotionStartAccepted");
   });
+
+  socket.on(
+    "player:bowlingMotion",
+    ({ roomCode, forward, side, spin, power, sequence, clientTime }) => {
+      const room = rooms[roomCode];
+      if (!room || !room.bowlingActive) return;
+
+      if (socket.id !== room.bowlingCurrentPlayerId) return;
+      if (room.bowlingThrown) return;
+
+      const player = getPlayer(room, socket.id);
+      if (!player) return;
+
+      // Motion packets are only accepted after this player started holding the
+      // Bowling button. This prevents background sensor events from driving Unity.
+      if (room.bowlingHoldingPlayerId !== socket.id) return;
+
+      const safeSequence = Math.max(0, Math.floor(Number(sequence) || 0));
+
+      // Ignore delayed/out-of-order packets.
+      if (safeSequence <= room.bowlingLastMotionSequence) return;
+      room.bowlingLastMotionSequence = safeSequence;
+
+      // Server-side backstop against accidental browser floods. The phone already
+      // throttles to ~25 Hz, but this protects Render and Unity too.
+      const now = Date.now();
+      if (now - room.bowlingLastMotionAt < BOWLING_MOTION_MIN_INTERVAL_MS) return;
+      room.bowlingLastMotionAt = now;
+
+      sendToUnity(roomCode, {
+        type: "bowlingMotion",
+        playerId: player.id,
+        playerName: player.name,
+        forward: clamp01(forward),
+        side: clampSigned(side),
+        spin: clampSigned(spin),
+        power: clamp01(power),
+        sequence: safeSequence,
+        clientTime: Number(clientTime) || 0,
+        serverTime: now,
+      });
+    }
+  );
+
+  socket.on("player:bowlingMotionCancel", ({ roomCode }) => {
+    const room = rooms[roomCode];
+    if (!room || !room.bowlingActive) return;
+
+    if (room.bowlingHoldingPlayerId === socket.id) {
+      const player = getPlayer(room, socket.id);
+
+      room.bowlingHoldingPlayerId = null;
+      room.bowlingLastMotionAt = 0;
+      room.bowlingLastMotionSequence = -1;
+
+      if (player) {
+        sendToUnity(roomCode, {
+          type: "bowlingMotionCancelled",
+          playerId: player.id,
+          playerName: player.name,
+        });
+      }
+    }
+  });
+
+  socket.on(
+    "player:bowlingThrow",
+    ({ roomCode, forward, side, spin, power, rawPower, sampleCount }) => {
+      const room = rooms[roomCode];
+      if (!room || !room.bowlingActive) return;
+
+      const player = getPlayer(room, socket.id);
+      if (!player) {
+        socket.emit("game:bowlingThrowRejected", "You are not in this room.");
+        return;
+      }
+
+      if (socket.id !== room.bowlingCurrentPlayerId) {
+        socket.emit("game:bowlingThrowRejected", "It is not your turn.");
+        return;
+      }
+
+      if (room.bowlingThrown) {
+        socket.emit("game:bowlingThrowRejected", "You already threw this turn.");
+        return;
+      }
+
+      const safeForward = clamp01(forward);
+      const safeSide = clampSigned(side);
+      const safeSpin = clampSigned(spin);
+      const safePower = clamp01(power);
+      const safeRawPower = clamp01(rawPower == null ? safePower : rawPower);
+      const safeSampleCount = Math.max(0, Math.floor(Number(sampleCount) || 0));
+
+      room.bowlingThrown = true;
+      room.bowlingHoldingPlayerId = null;
+
+      sendToUnity(roomCode, {
+        type: "bowlingThrow",
+        playerId: player.id,
+        playerName: player.name,
+        forward: safeForward,
+        side: safeSide,
+        spin: safeSpin,
+        power: safePower,
+        rawPower: safeRawPower,
+        sampleCount: safeSampleCount,
+      });
+
+      io.to(roomCode).emit("game:bowlingThrowAccepted", {
+        playerId: player.id,
+        playerName: player.name,
+      });
+
+      console.log(
+        "Bowling throw:",
+        player.name,
+        safeForward,
+        safeSide,
+        safeSpin,
+        safePower,
+        "samples:",
+        safeSampleCount
+      );
+    }
+  );
 
   socket.on("player:submitSketchStackPrompt", ({ roomCode, prompt }) => {
     const room = rooms[roomCode];
@@ -1906,6 +2070,8 @@ io.on("connection", (socket) => {
       const room = rooms[roomCode];
 
       const oldLength = room.players.length;
+      const removedBowlingIndex = room.players.findIndex((player) => player.id === socket.id);
+      const wasCurrentBowler = room.bowlingCurrentPlayerId === socket.id;
       room.players = room.players.filter((player) => player.id !== socket.id);
 
       if (room.votes) {
@@ -1936,8 +2102,17 @@ io.on("connection", (socket) => {
         delete room.sketchStackVotes[socket.id];
       }
 
-      if (room.bowlingCurrentPlayerId === socket.id) {
+      if (room.bowlingHoldingPlayerId === socket.id) {
+        room.bowlingHoldingPlayerId = null;
+      }
+
+      if (removedBowlingIndex >= 0 && removedBowlingIndex < room.bowlingTurnIndex) {
+        room.bowlingTurnIndex--;
+      }
+
+      if (wasCurrentBowler) {
         room.bowlingCurrentPlayerId = null;
+        room.bowlingThrown = false;
       }
 
       if (room.sketchStackPlayerPrompts) {
@@ -1951,6 +2126,15 @@ io.on("connection", (socket) => {
           type: "playersUpdated",
           players: room.players,
         });
+
+        if (room.bowlingActive && wasCurrentBowler) {
+          if (room.players.length > 0) {
+            room.bowlingTurnIndex = room.bowlingTurnIndex % room.players.length;
+            sendBowlingTurn(roomCode);
+          } else {
+            resetBowling(room);
+          }
+        }
       }
     }
   });
