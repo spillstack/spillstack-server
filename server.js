@@ -1,113 +1,21 @@
-socket.on("bowlingNextTurn", (data) => {
-    const roomCode = String(data.roomCode || "")
-        .trim()
-        .toUpperCase();
+if (message.type === "bowlingNextTurn") {
+  const room = rooms[message.roomCode];
+  if (!room || !room.bowlingActive) return;
+  if (!room.bowlingThrown) return;
 
-    const keepSamePlayer =
-        data.keepSamePlayer === true;
+  const keepSamePlayer =
+    message.keepSamePlayer === true;
 
-    const room = rooms[roomCode];
-
-    if (!room) {
-        return;
-    }
+  if (!keepSamePlayer) {
+    room.bowlingTurnIndex++;
 
     if (
-        !room.bowling ||
-        !room.bowling.active
+      room.bowlingTurnIndex >=
+      room.players.length
     ) {
-        return;
+      room.bowlingTurnIndex = 0;
     }
+  }
 
-    if (
-        !room.players ||
-        room.players.length === 0
-    ) {
-        return;
-    }
-
-    // ==========================================
-    // SAME PLAYER GETS BALL 2 / BONUS BALL
-    // ==========================================
-    if (keepSamePlayer) {
-        const currentIndex =
-            Math.max(
-                0,
-                Math.min(
-                    room.bowling.turnIndex || 0,
-                    room.players.length - 1
-                )
-            );
-
-        const currentPlayer =
-            room.players[currentIndex];
-
-        if (!currentPlayer) {
-            return;
-        }
-
-        io.to(roomCode).emit(
-            "bowlingTurn",
-            {
-                currentPlayerId:
-                    currentPlayer.id,
-
-                currentPlayerName:
-                    currentPlayer.name,
-
-                turnIndex:
-                    currentIndex,
-
-                totalPlayers:
-                    room.players.length,
-
-                samePlayer:
-                    true
-            }
-        );
-
-        return;
-    }
-
-    // ==========================================
-    // FRAME FINISHED - NEXT PLAYER
-    // ==========================================
-
-    room.bowling.turnIndex++;
-
-    if (
-        room.bowling.turnIndex >=
-        room.players.length
-    ) {
-        room.bowling.turnIndex = 0;
-    }
-
-    const nextPlayer =
-        room.players[
-            room.bowling.turnIndex
-        ];
-
-    if (!nextPlayer) {
-        return;
-    }
-
-    io.to(roomCode).emit(
-        "bowlingTurn",
-        {
-            currentPlayerId:
-                nextPlayer.id,
-
-            currentPlayerName:
-                nextPlayer.name,
-
-            turnIndex:
-                room.bowling.turnIndex,
-
-            totalPlayers:
-                room.players.length,
-
-            samePlayer:
-                false
-        }
-    );
-});
+  sendBowlingTurn(message.roomCode);
+}
